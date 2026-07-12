@@ -23,6 +23,20 @@
     <!-- Android 13+ 前台服务类型权限 -->
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE_MEDIA_PLAYBACK" />
 
+    <!-- Android 11+ 可见性：允许检测/启动目标钢琴应用 -->
+    <queries>
+        <package android:name="com.miHoYo.GenshinImpact" />
+        <package android:name="com.PA.GenshinPiano" />
+        <package android:name="com.sky.xlzq" />
+        <package android:name="com.tgc.sky.android" />
+        <package android:name="com.netease.sky" />
+        <package android:name="com.any.piano" />
+        <intent>
+            <action android:name="android.intent.action.MAIN" />
+            <category android:name="android.intent.category.LAUNCHER" />
+        </intent>
+    </queries>
+
     <application
         android:allowBackup="true"
         android:dataExtractionRules="@xml/data_extraction_rules"

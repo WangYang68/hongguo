@@ -379,6 +379,7 @@ class PianoAccessibilityService : AccessibilityService() {
 
     /**
      * 显示标定覆盖层（标记+外框）- 在目标应用上层
+     * 注意：每次调用会重建 View；调用方应在之后确保控制面板在最上层
      */
     fun showCalibrationOverlay(
         markers: List<FloatingCalibrationService.KeyMarker>,
@@ -386,6 +387,14 @@ class PianoAccessibilityService : AccessibilityService() {
         onMarkersChanged: ((List<FloatingCalibrationService.KeyMarker>) -> Unit)? = null
     ) {
         Log.d(TAG, "showCalibrationOverlay called: ${markers.size} markers displayId=$overlayDisplayId")
+        // 若已有同一覆盖层，只更新标记，避免重建打断拖动手势
+        val existing = calOverlayView as? CalibrationOverlayView
+        if (existing != null && calOverlayWm != null) {
+            existing.setMarkers(markers)
+            existing.onMarkersChanged = onMarkersChanged
+            bringCalibrationControlPanelToFront()
+            return
+        }
         hideCalibrationOverlay()
         try {
             val wm = getOverlayWindowManager()
@@ -398,16 +407,22 @@ class PianoAccessibilityService : AccessibilityService() {
 
         val lp = android.view.WindowManager.LayoutParams().apply {
             type = android.view.WindowManager.LayoutParams.TYPE_ACCESSIBILITY_OVERLAY
-            // 不设置 FLAG_NOT_FOCUSABLE，避免隐式开启 FLAG_NOT_TOUCH_MODAL 导致触摸穿透
-            flags = android.view.WindowManager.LayoutParams.FLAG_LAYOUT_IN_SCREEN
+            // 全屏接收触摸；不设 NOT_TOUCH_MODAL，避免穿透
+            flags = android.view.WindowManager.LayoutParams.FLAG_LAYOUT_IN_SCREEN or
+                    android.view.WindowManager.LayoutParams.FLAG_LAYOUT_NO_LIMITS or
+                    android.view.WindowManager.LayoutParams.FLAG_HARDWARE_ACCELERATED
             format = android.graphics.PixelFormat.TRANSLUCENT
-            width = dm.widthPixels; height = dm.heightPixels
+            width = dm.widthPixels
+            height = dm.heightPixels
             gravity = android.view.Gravity.TOP or android.view.Gravity.START
+            x = 0
+            y = 0
         }
 
         calOverlayView = view
             wm.addView(view, lp)
             Log.d(TAG, "Calibration overlay shown via accessibility service (addView succeeded)")
+            // 控制面板必须在覆盖层之后再置顶，否则会被全屏层挡住无法拖动
             bringCalibrationControlPanelToFront()
         } catch (e: Exception) {
             Log.e(TAG, "FAILED to show calibration overlay", e)
@@ -435,17 +450,20 @@ class PianoAccessibilityService : AccessibilityService() {
             calPanelWm = wm
             val dm = getOverlayDisplayMetrics()
             val density = dm.density
+            val panelW = (280 * density).toInt()
 
             val lp = android.view.WindowManager.LayoutParams().apply {
                 type = android.view.WindowManager.LayoutParams.TYPE_ACCESSIBILITY_OVERLAY
                 flags = android.view.WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE or
-                        android.view.WindowManager.LayoutParams.FLAG_NOT_TOUCH_MODAL or
+                        android.view.WindowManager.LayoutParams.FLAG_LAYOUT_NO_LIMITS or
+                        android.view.WindowManager.LayoutParams.FLAG_HARDWARE_ACCELERATED or
                         android.view.WindowManager.LayoutParams.FLAG_LAYOUT_IN_SCREEN
                 format = android.graphics.PixelFormat.TRANSLUCENT
-                width = android.view.WindowManager.LayoutParams.WRAP_CONTENT
+                width = panelW
                 height = android.view.WindowManager.LayoutParams.WRAP_CONTENT
-                gravity = android.view.Gravity.TOP or android.view.Gravity.CENTER_HORIZONTAL
-                y = (120 * density).toInt()
+                gravity = android.view.Gravity.TOP or android.view.Gravity.START
+                x = (dm.widthPixels - panelW - 16 * density).toInt().coerceAtLeast(0)
+                y = (60 * density).toInt()
             }
             calPanelLp = lp
             calPanelView = panelView
@@ -472,7 +490,14 @@ class PianoAccessibilityService : AccessibilityService() {
         try {
             wm.removeView(view)
             wm.addView(view, lp)
-        } catch (_: Exception) {}
+            Log.d(TAG, "Calibration control panel brought to front")
+        } catch (e: Exception) {
+            Log.w(TAG, "bringCalibrationControlPanelToFront failed", e)
+            try {
+                wm.updateViewLayout(view, lp)
+            } catch (_: Exception) {
+            }
+        }
     }
 
     fun getCalPanelLp(): android.view.WindowManager.LayoutParams? = calPanelLp

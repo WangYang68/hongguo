@@ -91,6 +91,7 @@ fun HomeScreen(
         AlertDialog(
             onDismissRequest = {
                 showVipExpiredDialog = false
+                viewModel.dismissVipExpired()
                 pendingCloudMusic = null
                 activateCode = ""
                 activateError = null
@@ -152,6 +153,7 @@ fun HomeScreen(
                     Button(
                         onClick = {
                             showVipExpiredDialog = false
+                            viewModel.dismissVipExpired()
                             pendingCloudMusic = null
                             activateCode = ""
                             activateError = null
@@ -193,6 +195,7 @@ fun HomeScreen(
             dismissButton = {
                 TextButton(onClick = {
                     showVipExpiredDialog = false
+                    viewModel.dismissVipExpired()
                     pendingCloudMusic = null
                     activateCode = ""
                     activateError = null
@@ -295,15 +298,9 @@ fun HomeScreen(
                             musicList = cloudMusicList,
                             isLoading = isCloudLoading,
                             onMusicClick = { music ->
-                                // VIP检查
-                                viewModel.checkVipAndPlay(music) { canPlay, message ->
-                                    if (canPlay) {
-                                        onCloudMusicClick(music)
-                                    } else {
-                                        pendingCloudMusic = music
-                                        showVipExpiredDialog = true
-                                    }
-                                }
+                                // 先记下曲目，便于 VIP 激活后自动重试；校验在 playCloudMusic 内完成
+                                pendingCloudMusic = music
+                                onCloudMusicClick(music)
                             },
                             onLoadMore = { viewModel.loadMoreCloudMusic() }
                         )
@@ -403,10 +400,10 @@ fun HomeScreen(
             val appName = pkg?.let { SupportedApps.findByPackage(it)?.appName } ?: "目标应用"
             AlertDialog(
                 onDismissRequest = { viewModel.dismissCalibrationPrompt() },
-                title = { Text("需要标定琴键坐标", color = TextPrimary, fontWeight = FontWeight.Bold) },
+                title = { Text("需要先设置音符坐标", color = TextPrimary, fontWeight = FontWeight.Bold) },
                 text = {
                     Text(
-                        "「$appName」还没有可用的音符坐标。\n\n请打开该应用的钢琴界面，用悬浮标定把标记对齐到每个琴键后保存。不同游戏键位数量不同（如原神21键、光遇15键）。",
+                        "「$appName」还没有可用的音符坐标，无法播放。\n\n请先打开该应用的钢琴界面，完成悬浮标定后再播放。\n（例如 Genshin Piano 请选择「原神钢琴」）",
                         color = TextHint
                     )
                 },
@@ -417,7 +414,7 @@ fun HomeScreen(
                             pkg?.let { viewModel.startCalibration(it) }
                         },
                         colors = ButtonDefaults.buttonColors(containerColor = PrimaryPurple)
-                    ) { Text("开始标定") }
+                    ) { Text("去设置坐标") }
                 },
                 dismissButton = {
                     TextButton(onClick = { viewModel.dismissCalibrationPrompt() }) {
@@ -427,6 +424,42 @@ fun HomeScreen(
                 containerColor = SurfaceDark,
                 shape = RoundedCornerShape(20.dp)
             )
+        }
+
+        // 目标 App 未打开提示
+        if (uiState.showTargetAppPrompt) {
+            val pkg = uiState.targetAppPromptPackage ?: uiState.calibratingAppPackage
+            val appName = pkg?.let { SupportedApps.findByPackage(it)?.appName } ?: "目标应用"
+            AlertDialog(
+                onDismissRequest = { viewModel.dismissTargetAppPrompt() },
+                title = { Text("请先打开「$appName」", color = TextPrimary, fontWeight = FontWeight.Bold) },
+                text = {
+                    Text(
+                        "设置音符坐标前，需要先启动「$appName」并进入钢琴键位界面。\n\n当前未检测到该应用在前台。请先打开后再继续标定。",
+                        color = TextHint
+                    )
+                },
+                confirmButton = {
+                    Button(
+                        onClick = { viewModel.confirmOpenTargetAppAndCalibrate() },
+                        colors = ButtonDefaults.buttonColors(containerColor = PrimaryPurple)
+                    ) { Text("打开并标定") }
+                },
+                dismissButton = {
+                    TextButton(onClick = { viewModel.dismissTargetAppPrompt() }) {
+                        Text("取消", color = TextHint)
+                    }
+                },
+                containerColor = SurfaceDark,
+                shape = RoundedCornerShape(20.dp)
+            )
+        }
+
+        // VIP 过期（ViewModel 统一触发：本地/云端播放共用）
+        LaunchedEffect(uiState.showVipExpired) {
+            if (uiState.showVipExpired) {
+                showVipExpiredDialog = true
+            }
         }
 
         // 权限对话框（必须使用 ViewModel 状态，否则播放/标定时的权限请求不会显示）

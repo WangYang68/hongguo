@@ -298,56 +298,66 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     // ========== VIP检查与播放 ==========
 
     /**
-     * 检查VIP状态并播放云音乐
+     * 调用接口检查 VIP / 试用是否有效。
+     * @return true 可播放；false 已弹过期或错误提示
+     */
+    private suspend fun ensureVipNotExpired(): Boolean {
+        val token = AuthManager.token ?: ""
+        if (token.isBlank()) {
+            _uiState.value = _uiState.value.copy(errorMessage = "请先登录后再播放")
+            return false
+        }
+        val vipResult = apiRepository.checkVipExpire(token)
+        return vipResult.fold(
+            onSuccess = { vipValid ->
+                if (vipValid) return@fold true
+                // VIP无效，检查10分钟试用期
+                val createdAt = AuthManager.createdAt
+                if (createdAt.isNotBlank()) {
+                    try {
+                        val dt = dateFormat.parse(createdAt)
+                        if (dt != null) {
+                            val trialEnd = Date(dt.time + 10 * 60 * 1000)
+                            if (Date().before(trialEnd)) return@fold true
+                        }
+                    } catch (e: Exception) {
+                        Log.e("MainViewModel", "Parse date error", e)
+                    }
+                }
+                _uiState.value = _uiState.value.copy(showVipExpired = true)
+                false
+            },
+            onFailure = { e ->
+                _uiState.value = _uiState.value.copy(
+                    errorMessage = "会员状态检查失败: ${e.message ?: "网络错误"}"
+                )
+                false
+            }
+        )
+    }
+
+    fun dismissVipExpired() {
+        _uiState.value = _uiState.value.copy(showVipExpired = false)
+    }
+
+    /**
+     * 检查VIP状态并播放云音乐（HomeScreen 云列表入口）
      */
     fun checkVipAndPlay(music: MusicItem, callback: (Boolean, String) -> Unit) {
         viewModelScope.launch {
-            val token = AuthManager.token ?: ""
-            if (token.isBlank()) {
-                callback(false, "请先登录")
+            if (!ensureVipNotExpired()) {
+                callback(false, if (_uiState.value.showVipExpired) "VIP已过期" else (_uiState.value.errorMessage ?: "无法播放"))
                 return@launch
             }
-
-            val vipResult = apiRepository.checkVipExpire(token)
-            vipResult.fold(
-                onSuccess = { vipValid ->
-                    if (vipValid) {
-                        // VIP有效，添加播放记录
-                        apiRepository.addRecentPlay(token, music.id)
-                        callback(true, "")
-                    } else {
-                        // VIP无效，检查10分钟试用期
-                        val createdAt = AuthManager.createdAt
-                        if (createdAt.isNotBlank()) {
-                            try {
-                                val dt = dateFormat.parse(createdAt)
-                                if (dt != null) {
-                                    val trialEnd = Date(dt.time + 10 * 60 * 1000) // +10分钟
-                                    if (Date().before(trialEnd)) {
-                                        // 在试用期内
-                                        apiRepository.addRecentPlay(token, music.id)
-                                        callback(true, "")
-                                        return@fold
-                                    }
-                                }
-                            } catch (e: Exception) {
-                                Log.e("MainViewModel", "Parse date error", e)
-                            }
-                        }
-                        callback(false, "VIP已过期")
-                    }
-                },
-                onFailure = { e ->
-                    callback(false, e.message ?: "检查VIP状态失败")
-                }
-            )
+            val token = AuthManager.token ?: ""
+            apiRepository.addRecentPlay(token, music.id)
+            callback(true, "")
         }
     }
 
     fun playCloudMusic(music: MusicItem) {
         viewModelScope.launch {
             try {
-                val token = AuthManager.token ?: ""
                 val packageName = _uiState.value.selectedAppPackage
 
                 if (packageName.isNullOrBlank()) {
@@ -359,18 +369,31 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                     return@launch
                 }
 
-                if (!ensurePlayPermissions()) return@launch
-
-                val coordEntity = coordinateRepository.getCoordinateByPackage(packageName)
-                if (coordEntity == null || !coordinateRepository.isCoordinateEntityValid(coordEntity)) {
+                // 1) 接口检测是否过期
+                if (!ensureVipNotExpired()) {
                     _uiState.value = _uiState.value.copy(
-                        errorMessage = "请先为「${SupportedApps.findByPackage(packageName)?.appName ?: packageName}」标定琴键坐标",
-                        calibratingAppPackage = packageName
+                        pendingMusicId = "cloud_${music.id}",
+                        pendingCloudMusicJson = music.id.toString()
                     )
-                    startCalibration(packageName)
                     return@launch
                 }
 
+                // 2) 权限
+                if (!ensurePlayPermissions()) return@launch
+
+                // 3) 坐标是否已设置
+                val coordEntity = coordinateRepository.getCoordinateByPackage(packageName)
+                if (coordEntity == null || !coordinateRepository.isCoordinateEntityValid(coordEntity)) {
+                    _uiState.value = _uiState.value.copy(
+                        errorMessage = "请先为「${SupportedApps.findByPackage(packageName)?.appName ?: packageName}」设置音符坐标后再播放",
+                        showCalibrationPrompt = true,
+                        calibratingAppPackage = packageName,
+                        pendingMusicId = "cloud_${music.id}"
+                    )
+                    return@launch
+                }
+
+                val token = AuthManager.token ?: ""
                 apiRepository.addRecentPlay(token, music.id)
 
                 val app = getApplication<Application>()
@@ -382,7 +405,6 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                     coordinateSchemeName = coordEntity.schemeName.ifBlank { null }
                 )
 
-                // 统一由悬浮播放器负责下载/解析/调度，避免双重控制
                 com.example.magicpinao.core.accessibility.FloatingPlayerService.start(
                     app, packageName, music.name, "cloud_${music.id}", autoPlay = true
                 )
@@ -502,26 +524,12 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
             selectedAppPackage = packageName,
             showAppSelector = false,
             showCalibrationPrompt = false,
-            calibratingAppPackage = packageName
+            calibratingAppPackage = packageName,
+            hasCoordinates = false,
+            coordinateSchemeName = null
         )
-        refreshCoordinateStatus(packageName)
-
-        val pending = _uiState.value.pendingMusicId
-        if (!pending.isNullOrBlank() && !pending.startsWith("cloud_")) {
-            // 有待播音乐：先检查坐标，没有则直接进悬浮标定
-            viewModelScope.launch {
-                val has = coordinateRepository.hasCoordinateForPackage(packageName)
-                if (has) {
-                    _uiState.value = _uiState.value.copy(pendingMusicId = null)
-                    playMusic(pending, packageName)
-                } else {
-                    startCalibration(packageName)
-                }
-            }
-        } else {
-            // 选择游戏 = 进入该游戏的悬浮坐标标定（可重新标定）
-            startCalibration(packageName)
-        }
+        // 选择原神/光遇/原神钢琴 = 重新设置该游戏的音符坐标
+        startCalibration(packageName)
     }
 
     fun toggleAppSelector() {
@@ -532,6 +540,28 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
 
     fun dismissCalibrationPrompt() {
         _uiState.value = _uiState.value.copy(showCalibrationPrompt = false)
+    }
+
+    fun dismissTargetAppPrompt() {
+        _uiState.value = _uiState.value.copy(
+            showTargetAppPrompt = false,
+            targetAppPromptPackage = null
+        )
+    }
+
+    /** 用户确认后：打开目标 App 并开始悬浮标定 */
+    fun confirmOpenTargetAppAndCalibrate() {
+        val pkg = _uiState.value.targetAppPromptPackage
+            ?: _uiState.value.calibratingAppPackage
+            ?: _uiState.value.selectedAppPackage
+            ?: return
+        dismissTargetAppPrompt()
+        launchTargetApp(pkg)
+        // 稍后再启动标定服务（给目标 App 一点启动时间）
+        viewModelScope.launch {
+            kotlinx.coroutines.delay(800)
+            startCalibrationService(pkg)
+        }
     }
 
     fun dismissPermissionDialog() {
@@ -607,12 +637,45 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         }
     }
 
+    private fun isPackageInstalled(pkg: String): Boolean {
+        return try {
+            getApplication<Application>().packageManager.getLaunchIntentForPackage(pkg) != null
+        } catch (_: Exception) {
+            false
+        }
+    }
+
+    private fun isPackageForeground(pkg: String): Boolean {
+        val acc = com.example.magicpinao.core.accessibility.PianoAccessibilityService.instance
+            ?: return false
+        return try {
+            val root = acc.rootInActiveWindow ?: return false
+            val current = root.packageName?.toString()
+            root.recycle()
+            current == pkg
+        } catch (_: Exception) {
+            false
+        }
+    }
+
+    private fun launchTargetApp(pkg: String): Boolean {
+        return try {
+            val intent = getApplication<Application>().packageManager.getLaunchIntentForPackage(pkg)
+            if (intent != null) {
+                intent.addFlags(android.content.Intent.FLAG_ACTIVITY_NEW_TASK)
+                getApplication<Application>().startActivity(intent)
+                true
+            } else false
+        } catch (_: Exception) {
+            false
+        }
+    }
+
     fun startCalibration(packageName: String = _uiState.value.selectedAppPackage ?: "") {
         val pkg = packageName.ifBlank {
             _uiState.value.selectedAppPackage ?: return
         }
         val appInfo = SupportedApps.findByPackage(pkg) ?: SupportedApps.getDefault()
-        // 权限不足时弹窗，不要静默返回
         if (!ensurePlayPermissions()) {
             _uiState.value = _uiState.value.copy(
                 calibratingAppPackage = pkg,
@@ -620,10 +683,34 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
             )
             return
         }
+        if (!isPackageInstalled(pkg)) {
+            _uiState.value = _uiState.value.copy(
+                isCalibrating = false,
+                errorMessage = "未安装「${appInfo.appName}」，请先安装该应用后再设置音符坐标"
+            )
+            return
+        }
+        // 未打开目标软件时，先弹窗明确提示用户
+        if (!isPackageForeground(pkg)) {
+            _uiState.value = _uiState.value.copy(
+                isCalibrating = false,
+                calibratingAppPackage = pkg,
+                showTargetAppPrompt = true,
+                targetAppPromptPackage = pkg,
+                errorMessage = null
+            )
+            return
+        }
+        startCalibrationService(pkg)
+    }
+
+    private fun startCalibrationService(pkg: String) {
+        val appInfo = SupportedApps.findByPackage(pkg) ?: SupportedApps.getDefault()
         _uiState.value = _uiState.value.copy(
             isCalibrating = true,
             calibratingAppPackage = pkg,
             showCalibrationPrompt = false,
+            showTargetAppPrompt = false,
             selectedAppPackage = pkg
         )
         com.example.magicpinao.core.accessibility.FloatingPlayerService.stop(getApplication())
@@ -642,6 +729,13 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     private fun playMusic(musicId: String, packageName: String) {
         viewModelScope.launch {
             try {
+                // 1) 接口检测会员是否过期
+                if (!ensureVipNotExpired()) {
+                    _uiState.value = _uiState.value.copy(pendingMusicId = musicId)
+                    return@launch
+                }
+
+                // 2) 权限
                 if (!ensurePlayPermissions()) {
                     _uiState.value = _uiState.value.copy(pendingMusicId = musicId)
                     return@launch
@@ -652,15 +746,15 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                     return@launch
                 }
 
+                // 3) 坐标是否已设置好
                 val coordEntity = coordinateRepository.getCoordinateByPackage(packageName)
                 if (coordEntity == null || !coordinateRepository.isCoordinateEntityValid(coordEntity)) {
-                    // 无有效坐标 → 直接启动悬浮标定（不再只弹文字对话框）
                     _uiState.value = _uiState.value.copy(
                         pendingMusicId = musicId,
                         calibratingAppPackage = packageName,
-                        errorMessage = "请先标定「${SupportedApps.findByPackage(packageName)?.appName ?: packageName}」琴键坐标"
+                        showCalibrationPrompt = true,
+                        errorMessage = "请先为「${SupportedApps.findByPackage(packageName)?.appName ?: packageName}」设置音符坐标后再播放"
                     )
-                    startCalibration(packageName)
                     return@launch
                 }
 
@@ -745,7 +839,12 @@ data class MainUiState(
     val calibratingAppPackage: String? = null,
     val hasCoordinates: Boolean = false,
     val coordinateSchemeName: String? = null,
-    val showCalibrationPrompt: Boolean = false
+    val showCalibrationPrompt: Boolean = false,
+    /** 目标钢琴 App 未打开时的引导弹窗 */
+    val showTargetAppPrompt: Boolean = false,
+    val targetAppPromptPackage: String? = null,
+    /** VIP 过期引导（本地/云端播放共用） */
+    val showVipExpired: Boolean = false
 )
 
 sealed class AppCheckResult {

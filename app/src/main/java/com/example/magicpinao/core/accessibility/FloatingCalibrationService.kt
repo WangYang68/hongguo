@@ -149,22 +149,7 @@ class FloatingCalibrationService : Service() {
                 totalKeys = pianoLayout.keyCount
                 openTargetOnStart = intent.getBooleanExtra(EXTRA_OPEN_TARGET, true)
                 startForegroundNotification()
-                // 先显示触发按钮，再打开目标 App，并在切换后再次刷新悬浮窗
-                showTriggerButton()
-                if (openTargetOnStart && currentAppPackage.isNotBlank()) {
-                    openTargetApp(currentAppPackage)
-                    scope.launch {
-                        delay(1200)
-                        // 切到目标 App 后重新挂载，避免悬浮窗被系统/模拟器吃掉
-                        if (phase == Phase.TRIGGER) {
-                            showTriggerButton()
-                            // 同时用无障碍 Overlay 再挂一份（部分模拟器只有这层能盖住游戏）
-                            mirrorTriggerViaAccessibility()
-                        }
-                    }
-                } else {
-                    mirrorTriggerViaAccessibility()
-                }
+                scope.launch { prepareAndShowCalibration() }
             }
             ACTION_STOP_CALIBRATION -> {
                 cleanup()
@@ -182,13 +167,18 @@ class FloatingCalibrationService : Service() {
     }
 
     private fun cleanup() {
+        phase = Phase.TRIGGER
         removeTriggerButton()
         removeOverlayView()
         removeControlPanel()
         // 同步清理无障碍服务侧可能残留的旧窗口
-        PianoAccessibilityService.instance?.hideCalibrationTrigger()
-        PianoAccessibilityService.instance?.hideCalibrationOverlay()
-        PianoAccessibilityService.instance?.hideCalibrationControlPanel()
+        try {
+            PianoAccessibilityService.instance?.hideCalibrationTrigger()
+            PianoAccessibilityService.instance?.hideCalibrationOverlay()
+            PianoAccessibilityService.instance?.hideCalibrationControlPanel()
+        } catch (e: Exception) {
+            Log.e(TAG, "acc cleanup failed", e)
+        }
     }
 
     private fun startForegroundNotification() {
@@ -228,6 +218,148 @@ class FloatingCalibrationService : Service() {
         }
     }
 
+    // ===== 启动前检查目标 App =====
+
+    private suspend fun prepareAndShowCalibration() {
+        if (!hasOverlayPermission()) {
+            withContext(Dispatchers.Main) {
+                Toast.makeText(this@FloatingCalibrationService, "请先授予悬浮窗权限", Toast.LENGTH_LONG).show()
+                stopCalibrationService()
+            }
+            return
+        }
+        if (currentAppPackage.isBlank()) {
+            withContext(Dispatchers.Main) {
+                Toast.makeText(this@FloatingCalibrationService, "未指定目标应用", Toast.LENGTH_LONG).show()
+                stopCalibrationService()
+            }
+            return
+        }
+
+        // 1) 是否安装
+        if (!isAppInstalled(currentAppPackage)) {
+            withContext(Dispatchers.Main) {
+                Toast.makeText(
+                    this@FloatingCalibrationService,
+                    "未安装「${getAppName()}」\n包名: $currentAppPackage\n请先安装该应用后再标定",
+                    Toast.LENGTH_LONG
+                ).show()
+                stopCalibrationService()
+            }
+            return
+        }
+
+        // 2) 启动目标 App
+        if (openTargetOnStart) {
+            var launched = false
+            withContext(Dispatchers.Main) {
+                launched = openTargetApp(currentAppPackage)
+                if (!launched) {
+                    Toast.makeText(
+                        this@FloatingCalibrationService,
+                        "无法启动「${getAppName()}」，请确认已安装该应用",
+                        Toast.LENGTH_LONG
+                    ).show()
+                    stopCalibrationService()
+                } else {
+                    Toast.makeText(
+                        this@FloatingCalibrationService,
+                        "正在打开「${getAppName()}」，请进入钢琴界面…",
+                        Toast.LENGTH_LONG
+                    ).show()
+                }
+            }
+            if (!launched) return
+        }
+
+        // 3) 等待真正进入前台（必须是当前活动窗口）
+        var foreground = false
+        repeat(20) { // 最多约 10 秒
+            delay(500)
+            if (isTargetAppForeground(currentAppPackage)) {
+                foreground = true
+                return@repeat
+            }
+            if (it == 5 || it == 12) {
+                withContext(Dispatchers.Main) { openTargetApp(currentAppPackage) }
+            }
+        }
+
+        withContext(Dispatchers.Main) {
+            if (!foreground) {
+                Toast.makeText(
+                    this@FloatingCalibrationService,
+                    "未检测到「${getAppName()}」正在运行。\n请先打开该应用并进入钢琴界面后，再在 Magic Piano 中选择该游戏进行标定。",
+                    Toast.LENGTH_LONG
+                ).show()
+                // 未启动目标 App：不显示任何标定悬浮层，直接结束
+                stopCalibrationService()
+                return@withContext
+            }
+            Toast.makeText(
+                this@FloatingCalibrationService,
+                "已检测到「${getAppName()}」，请进入钢琴键位界面后点击「开始标定」",
+                Toast.LENGTH_LONG
+            ).show()
+            showTriggerButton()
+            mirrorTriggerViaAccessibility()
+        }
+    }
+
+    /** 彻底关闭标定（取消 / 失败 / 完成共用） */
+    private fun stopCalibrationService() {
+        try {
+            cleanup()
+        } catch (e: Exception) {
+            Log.e(TAG, "cleanup error", e)
+        }
+        try {
+            stopForeground(STOP_FOREGROUND_REMOVE)
+        } catch (_: Exception) {
+        }
+        stopSelf()
+    }
+
+    private fun isAppInstalled(packageName: String): Boolean {
+        return try {
+            if (Build.VERSION.SDK_INT >= 33) {
+                packageManager.getPackageInfo(
+                    packageName,
+                    android.content.pm.PackageManager.PackageInfoFlags.of(0)
+                )
+            } else {
+                @Suppress("DEPRECATION")
+                packageManager.getPackageInfo(packageName, 0)
+            }
+            true
+        } catch (_: Exception) {
+            try {
+                packageManager.getLaunchIntentForPackage(packageName) != null
+            } catch (_: Exception) {
+                false
+            }
+        }
+    }
+
+    /**
+     * 仅当目标 App 是「当前活动窗口」才算在前台。
+     * 不用 windows 列表，避免后台残留窗口误判。
+     */
+    private fun isTargetAppForeground(packageName: String): Boolean {
+        if (packageName.isBlank()) return false
+        val selfPkg = applicationContext.packageName
+        if (packageName == selfPkg) return false
+        val acc = PianoAccessibilityService.instance ?: return false
+        return try {
+            val root = acc.rootInActiveWindow ?: return false
+            val pkg = root.packageName?.toString()
+            root.recycle()
+            pkg != null && pkg == packageName
+        } catch (_: Exception) {
+            false
+        }
+    }
+
     // ===== 阶段1：触发按钮 =====
 
     private fun showTriggerButton() {
@@ -253,6 +385,15 @@ class FloatingCalibrationService : Service() {
         try {
             acc.setTargetPackageForOverlay(currentAppPackage)
             acc.showCalibrationTrigger(layoutType.label, totalKeys) {
+                if (!isTargetAppForeground(currentAppPackage)) {
+                    Toast.makeText(
+                        this,
+                        "请先打开「${getAppName()}」并进入钢琴界面",
+                        Toast.LENGTH_LONG
+                    ).show()
+                    openTargetApp(currentAppPackage)
+                    return@showCalibrationTrigger
+                }
                 phase = Phase.CALIBRATE
                 removeTriggerButton()
                 acc.hideCalibrationTrigger()
@@ -347,9 +488,20 @@ class FloatingCalibrationService : Service() {
                 }
                 MotionEvent.ACTION_UP -> {
                     if (!isDrag) {
-                        phase = Phase.CALIBRATE
-                        removeTriggerButton()
-                        showCalibrationUI()
+                        // 点击开始标定前再确认目标 App
+                        if (!isTargetAppForeground(currentAppPackage)) {
+                            Toast.makeText(
+                                this,
+                                "请先打开「${getAppName()}」并进入钢琴界面",
+                                Toast.LENGTH_LONG
+                            ).show()
+                            openTargetApp(currentAppPackage)
+                        } else {
+                            phase = Phase.CALIBRATE
+                            removeTriggerButton()
+                            PianoAccessibilityService.instance?.hideCalibrationTrigger()
+                            showCalibrationUI()
+                        }
                     }
                     isDrag = false
                     true
@@ -383,22 +535,29 @@ class FloatingCalibrationService : Service() {
 
     private fun showCalibrationUI() {
         initDefaultMarkers()
-        createOverlayView()
-        createControlPanel()
-        // 同步一份到无障碍 Overlay（游戏上层更稳）
+        // 只用一层覆盖层，避免双层抢触摸导致无法拖动/缩放
         val acc = PianoAccessibilityService.instance
         if (acc != null) {
+            removeOverlayView() // 清掉可能残留的 APPLICATION 层
             try {
+                acc.setTargetPackageForOverlay(currentAppPackage)
                 acc.showCalibrationOverlay(markers.toList(), layoutType.label) { updated ->
                     markers.clear()
                     markers.addAll(updated)
-                    overlayView?.setMarkers(markers.toList())
                     updatePanelText()
                 }
-                // 控制面板优先用我们自己的 APPLICATION_OVERLAY；无障碍侧只补覆盖层
+                createControlPanel(useAccessibility = true)
+                // 确保控制面板在覆盖层之上，取消按钮可点
+                PianoAccessibilityService.instance?.bringCalibrationControlPanelToFront()
+                Log.d(TAG, "Calibration UI via accessibility overlay only")
             } catch (e: Exception) {
-                Log.w(TAG, "acc overlay failed", e)
+                Log.w(TAG, "acc overlay failed, fallback APPLICATION_OVERLAY", e)
+                createOverlayView()
+                createControlPanel(useAccessibility = false)
             }
+        } else {
+            createOverlayView()
+            createControlPanel(useAccessibility = false)
         }
     }
 
@@ -415,7 +574,6 @@ class FloatingCalibrationService : Service() {
 
         val lp = WindowManager.LayoutParams().apply {
             type = overlayType()
-            // 覆盖层需要接收触摸，不使用 NOT_TOUCH_MODAL
             flags = WindowManager.LayoutParams.FLAG_LAYOUT_NO_LIMITS or
                 WindowManager.LayoutParams.FLAG_HARDWARE_ACCELERATED or
                 WindowManager.LayoutParams.FLAG_LAYOUT_IN_SCREEN
@@ -445,11 +603,13 @@ class FloatingCalibrationService : Service() {
         }
         overlayView = null
         overlayLp = null
+        PianoAccessibilityService.instance?.hideCalibrationOverlay()
     }
 
-    private fun createControlPanel() {
+    private fun createControlPanel(useAccessibility: Boolean = false) {
         removeControlPanel()
         val density = resources.displayMetrics.density
+        val dm = resources.displayMetrics
         controlPanel = LayoutInflater.from(this).inflate(R.layout.floating_calibration_view, null)
         tvStep = controlPanel?.findViewById(R.id.tvStep)
         val btnReset = controlPanel?.findViewById<LinearLayout>(R.id.btnCalibrate)
@@ -466,20 +626,26 @@ class FloatingCalibrationService : Service() {
         controlPanel?.findViewById<TextView>(R.id.btn_calibrate_text)?.text = "重置"
         btnReset?.setOnClickListener {
             initDefaultMarkers()
-            overlayView?.setMarkers(markers.toList())
+            pushMarkersToOverlay()
             updatePanelText()
             Toast.makeText(this, "已重置标记位置", Toast.LENGTH_SHORT).show()
         }
         btnFinish?.setOnClickListener { saveCalibration() }
         btnCancel?.setOnClickListener {
-            removeOverlayView()
-            removeControlPanel()
-            showTriggerButton()
             Toast.makeText(this, "已取消标定", Toast.LENGTH_SHORT).show()
+            stopCalibrationService()
         }
+        // 同时给内部文字绑定，避免只点到 TextView 时无响应
+        controlPanel?.findViewById<TextView>(R.id.btn_calibrate_text)
+        (btnCancel?.getChildAt(0) as? TextView)?.setOnClickListener {
+            Toast.makeText(this, "已取消标定", Toast.LENGTH_SHORT).show()
+            stopCalibrationService()
+        }
+        (btnFinish?.getChildAt(0) as? TextView)?.setOnClickListener { saveCalibration() }
 
-        dragHandle?.setOnTouchListener { _, event ->
-            when (event.action) {
+        // 整块面板可拖动（标题栏/拖动条）
+        val dragListener = View.OnTouchListener { _, event ->
+            when (event.actionMasked) {
                 MotionEvent.ACTION_DOWN -> {
                     panelTouchStartX = event.rawX
                     panelTouchStartY = event.rawY
@@ -491,36 +657,91 @@ class FloatingCalibrationService : Service() {
                     val dx = (event.rawX - panelTouchStartX).toInt()
                     val dy = (event.rawY - panelTouchStartY).toInt()
                     panelLp?.let { lp ->
-                        lp.x = panelStartX + dx
-                        lp.y = panelStartY + dy
-                        try {
-                            controlPanel?.let { wm?.updateViewLayout(it, lp) }
-                        } catch (_: Exception) {
-                        }
+                        lp.x = (panelStartX + dx).coerceIn(0, dm.widthPixels - dp2px(120))
+                        lp.y = (panelStartY + dy).coerceIn(0, dm.heightPixels - dp2px(80))
+                        updateControlPanelLayout()
                     }
                     true
                 }
                 else -> false
             }
         }
+        dragHandle?.setOnTouchListener(dragListener)
+        // 标题行也可拖
+        (controlPanel as? LinearLayout)?.getChildAt(1)?.setOnTouchListener(dragListener)
 
+        val panelW = (280 * density).toInt()
         val lp = WindowManager.LayoutParams().apply {
-            type = overlayType()
+            type = if (useAccessibility) {
+                WindowManager.LayoutParams.TYPE_ACCESSIBILITY_OVERLAY
+            } else {
+                overlayType()
+            }
             flags = baseOverlayFlags()
             format = PixelFormat.TRANSLUCENT
-            width = WindowManager.LayoutParams.WRAP_CONTENT
+            width = panelW
             height = WindowManager.LayoutParams.WRAP_CONTENT
-            gravity = Gravity.TOP or Gravity.END
-            x = (16 * density).toInt()
-            y = (80 * density).toInt()
+            gravity = Gravity.TOP or Gravity.START
+            x = (dm.widthPixels - panelW - 16 * density).toInt().coerceAtLeast(0)
+            y = (60 * density).toInt()
         }
 
         try {
-            wm?.addView(controlPanel, lp)
-            panelLp = lp
-            Log.d(TAG, "Control panel shown")
+            if (useAccessibility && PianoAccessibilityService.instance != null) {
+                // 通过无障碍服务挂载，保证在标定覆盖层之上
+                PianoAccessibilityService.instance!!.showCalibrationControlPanel(controlPanel!!)
+                // 同步我们的 lp 引用，便于拖动更新
+                panelLp = PianoAccessibilityService.instance!!.getCalPanelLp() ?: lp
+                // 若无障碍侧 lp 是 CENTER，改成 START 坐标
+                panelLp?.let { plp ->
+                    plp.gravity = Gravity.TOP or Gravity.START
+                    plp.x = lp.x
+                    plp.y = lp.y
+                    plp.width = panelW
+                    PianoAccessibilityService.instance?.updateCalibrationControlPanel()
+                }
+            } else {
+                wm?.addView(controlPanel, lp)
+                panelLp = lp
+            }
+            Log.d(TAG, "Control panel shown useAcc=$useAccessibility")
         } catch (e: Exception) {
             Log.e(TAG, "Failed to show control panel", e)
+            try {
+                wm?.addView(controlPanel, lp.apply { type = overlayType() })
+                panelLp = lp
+            } catch (e2: Exception) {
+                Log.e(TAG, "Fallback panel also failed", e2)
+            }
+        }
+    }
+
+    private fun updateControlPanelLayout() {
+        val acc = PianoAccessibilityService.instance
+        if (acc != null && acc.getCalPanelLp() != null) {
+            // 把坐标写回无障碍侧 lp
+            acc.getCalPanelLp()?.let { alp ->
+                panelLp?.let { p ->
+                    alp.x = p.x
+                    alp.y = p.y
+                    alp.gravity = Gravity.TOP or Gravity.START
+                }
+            }
+            acc.updateCalibrationControlPanel()
+        } else {
+            try {
+                controlPanel?.let { wm?.updateViewLayout(it, panelLp) }
+            } catch (_: Exception) {
+            }
+        }
+    }
+
+    private fun pushMarkersToOverlay() {
+        overlayView?.setMarkers(markers.toList())
+        PianoAccessibilityService.instance?.showCalibrationOverlay(markers.toList(), layoutType.label) { updated ->
+            markers.clear()
+            markers.addAll(updated)
+            updatePanelText()
         }
     }
 
@@ -529,6 +750,7 @@ class FloatingCalibrationService : Service() {
             controlPanel?.let { wm?.removeView(it) }
         } catch (_: Exception) {
         }
+        PianoAccessibilityService.instance?.hideCalibrationControlPanel()
         controlPanel = null
         panelLp = null
         layoutBtnRow = null
@@ -536,7 +758,7 @@ class FloatingCalibrationService : Service() {
     }
 
     private fun refreshOverlayMarkers() {
-        overlayView?.setMarkers(markers.toList()) ?: createOverlayView()
+        pushMarkersToOverlay()
         updatePanelText()
     }
 
@@ -703,8 +925,7 @@ class FloatingCalibrationService : Service() {
                     Toast.makeText(applicationContext, "保存失败: ${e.message}", Toast.LENGTH_LONG).show()
                 }
             } finally {
-                cleanup()
-                stopSelf()
+                withContext(Dispatchers.Main) { stopCalibrationService() }
             }
         }
     }
@@ -731,17 +952,21 @@ class FloatingCalibrationService : Service() {
         }
     }
 
-    private fun openTargetApp(packageName: String) {
-        try {
+    private fun openTargetApp(packageName: String): Boolean {
+        return try {
             val intent = packageManager.getLaunchIntentForPackage(packageName)
             if (intent != null) {
                 intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
                 startActivity(intent)
+                true
             } else {
-                Toast.makeText(this, "未安装目标应用，请先安装后再标定", Toast.LENGTH_LONG).show()
+                Toast.makeText(this, "未安装「${getAppName()}」，无法打开", Toast.LENGTH_LONG).show()
+                false
             }
         } catch (e: Exception) {
             Log.e(TAG, "openTargetApp failed", e)
+            Toast.makeText(this, "打开失败: ${e.message}", Toast.LENGTH_LONG).show()
+            false
         }
     }
 
@@ -844,7 +1069,8 @@ class CalibrationOverlayView(context: Context) : View(context) {
     }
 
     private fun hitHandle(x: Float, y: Float, f: android.graphics.RectF): Drag {
-        val h = handleS + 10f
+        // 加大手柄热区，优先于标记点
+        val h = handleS + 28f
         val mx = f.centerX()
         val my = f.centerY()
         if (android.graphics.RectF(f.left - h, f.top - h, f.left + h, f.top + h).contains(x, y)) return Drag.H_TL
@@ -855,6 +1081,7 @@ class CalibrationOverlayView(context: Context) : View(context) {
         if (android.graphics.RectF(f.right - h, my - h, f.right + h, my + h).contains(x, y)) return Drag.H_MR
         if (android.graphics.RectF(mx - h, f.top - h, mx + h, f.top + h).contains(x, y)) return Drag.H_MT
         if (android.graphics.RectF(mx - h, f.bottom - h, mx + h, f.bottom + h).contains(x, y)) return Drag.H_MB
+        // 框内空白（非标记）用于整体拖动
         if (f.contains(x, y)) return Drag.FRAME
         return Drag.NONE
     }
@@ -864,7 +1091,7 @@ class CalibrationOverlayView(context: Context) : View(context) {
             val d = kotlin.math.sqrt(
                 ((x - markers[i].x) * (x - markers[i].x) + (y - markers[i].y) * (y - markers[i].y)).toDouble()
             )
-            if (d < markerR + 22f) return i
+            if (d < markerR + 16f) return i
         }
         return -1
     }
@@ -898,14 +1125,26 @@ class CalibrationOverlayView(context: Context) : View(context) {
             if (drag == Drag.MARKER && dragIdx == i) c.drawCircle(m.x, m.y, rr + 4f, paintSel)
             c.drawText(m.label, m.x, m.y - rr - 10f, paintText)
         }
-        c.drawText("拖动外框=整体调整 | 拖动手柄=缩放 | 拖动标记=微调", width / 2f, height * 0.06f, paintHint)
+        c.drawText("拖动边框手柄缩放 | 拖动框内空白平移 | 拖动圆点微调", width / 2f, height * 0.06f, paintHint)
     }
 
     override fun onTouchEvent(e: MotionEvent): Boolean {
+        // 使用 raw 相对 view 的坐标更稳：getX/getY
         val x = e.x
         val y = e.y
-        when (e.action) {
+        when (e.actionMasked) {
             MotionEvent.ACTION_DOWN -> {
+                parent?.requestDisallowInterceptTouchEvent(true)
+                // 手柄优先于标记，否则角落标记会挡住缩放
+                val h = hitHandle(x, y, frame())
+                if (h != Drag.NONE && h != Drag.FRAME) {
+                    drag = h
+                    tsX = x
+                    tsY = y
+                    startMarkers = markers.map { it.x to it.y }
+                    invalidate()
+                    return true
+                }
                 val mi = hitMarker(x, y)
                 if (mi >= 0) {
                     drag = Drag.MARKER
@@ -916,27 +1155,43 @@ class CalibrationOverlayView(context: Context) : View(context) {
                     invalidate()
                     return true
                 }
-                val h = hitHandle(x, y, frame())
-                if (h != Drag.NONE) {
-                    drag = h
+                if (h == Drag.FRAME) {
+                    drag = Drag.FRAME
                     tsX = x
                     tsY = y
                     startMarkers = markers.map { it.x to it.y }
                     invalidate()
                     return true
                 }
-                return true // 吞掉触摸，避免点穿到游戏
+                // 框外空白：开始整体拖动（以当前标记包围盒为准）
+                if (markers.isNotEmpty()) {
+                    drag = Drag.FRAME
+                    tsX = x
+                    tsY = y
+                    startMarkers = markers.map { it.x to it.y }
+                    invalidate()
+                }
+                return true
             }
             MotionEvent.ACTION_MOVE -> {
                 if (drag == Drag.NONE) return true
                 val dx = x - tsX
                 val dy = y - tsY
                 when (drag) {
-                    Drag.MARKER -> markers = markers.toMutableList().apply {
-                        set(dragIdx, get(dragIdx).copy(x = startMarkers[0].first + dx, y = startMarkers[0].second + dy))
+                    Drag.MARKER -> {
+                        if (dragIdx in markers.indices && startMarkers.isNotEmpty()) {
+                            markers = markers.toMutableList().apply {
+                                set(dragIdx, get(dragIdx).copy(
+                                    x = startMarkers[0].first + dx,
+                                    y = startMarkers[0].second + dy
+                                ))
+                            }
+                        }
                     }
-                    Drag.FRAME -> markers = startMarkers.mapIndexed { i, (sx, sy) ->
-                        markers[i].copy(x = sx + dx, y = sy + dy)
+                    Drag.FRAME -> {
+                        markers = startMarkers.mapIndexed { i, (sx, sy) ->
+                            markers[i].copy(x = sx + dx, y = sy + dy)
+                        }
                     }
                     Drag.H_TL -> applyHandle(0f, 0f, dx, dy)
                     Drag.H_TR -> applyHandle(1f, 0f, dx, dy)
@@ -949,36 +1204,40 @@ class CalibrationOverlayView(context: Context) : View(context) {
                     else -> {}
                 }
                 invalidate()
+                // 拖动过程中也回调，保证外部状态同步
+                onMarkersChanged?.invoke(markers)
             }
             MotionEvent.ACTION_UP, MotionEvent.ACTION_CANCEL -> {
                 if (drag != Drag.NONE) {
                     drag = Drag.NONE
+                    dragIdx = -1
                     onMarkersChanged?.invoke(markers)
+                    invalidate()
                 }
+                parent?.requestDisallowInterceptTouchEvent(false)
             }
         }
         return true
     }
 
     private fun applyHandle(hx: Float, hy: Float, dx: Float, dy: Float) {
-        if (markers.size < 2) return
+        if (markers.size < 2 || startMarkers.size < 2) return
         val xs = startMarkers.map { it.first }
         val ys = startMarkers.map { it.second }
         val ol = xs.min()
         val or = xs.max()
         val ot = ys.min()
         val ob = ys.max()
-        val ow = or - ol
-        val oh = ob - ot
-        if (ow < 1f || oh < 1f) return
+        val ow = (or - ol).coerceAtLeast(1f)
+        val oh = (ob - ot).coerceAtLeast(1f)
         val nl = if (hx == 0f) ol + dx else ol
         val nr = if (hx == 1f) or + dx else or
         val nt = if (hy == 0f) ot + dy else ot
         val nb = if (hy == 1f) ob + dy else ob
-        val nL = minOf(nl, nr - 50f)
-        val nR = maxOf(nr, nl + 50f)
-        val nT = minOf(nt, nb - 50f)
-        val nB = maxOf(nb, nt + 50f)
+        val nL = minOf(nl, nr - 80f)
+        val nR = maxOf(nr, nl + 80f)
+        val nT = minOf(nt, nb - 80f)
+        val nB = maxOf(nb, nt + 80f)
         val nw = nR - nL
         val nh = nB - nT
         markers = startMarkers.mapIndexed { i, (sx, sy) ->

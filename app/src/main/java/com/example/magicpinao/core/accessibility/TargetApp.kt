@@ -25,7 +25,21 @@ object SupportedApps {
             packageName = "com.sky.xlzq",
             appName = "光遇",
             keyCount = 15, baseNote = 60,
-            description = "15键 · 选择后将弹出悬浮标定", whiteKeysOnly = true, rowCount = 3,
+            description = "需已安装并打开光遇 · 15键", whiteKeysOnly = true, rowCount = 3,
+            layoutType = "LAYOUT_15"
+        ),
+        TargetApp(
+            packageName = "com.tgc.sky.android",
+            appName = "光遇(国际)",
+            keyCount = 15, baseNote = 60,
+            description = "Sky 国际服 · 15键", whiteKeysOnly = true, rowCount = 3,
+            layoutType = "LAYOUT_15"
+        ),
+        TargetApp(
+            packageName = "com.netease.sky",
+            appName = "光遇(网易)",
+            keyCount = 15, baseNote = 60,
+            description = "网易渠道 · 15键", whiteKeysOnly = true, rowCount = 3,
             layoutType = "LAYOUT_15"
         ),
         TargetApp(
