@@ -229,11 +229,25 @@ fun HomeScreen(
                 selectedAppName = uiState.selectedAppPackage?.let {
                     SupportedApps.findByPackage(it)?.appName
                 } ?: "选择目标应用",
-                onSettingsClick = onCalibrationClick,
+                hasCoordinates = uiState.hasCoordinates,
+                coordinateHint = when {
+                    uiState.selectedAppPackage.isNullOrBlank() -> "请选择游戏"
+                    uiState.hasCoordinates -> uiState.coordinateSchemeName ?: "坐标已就绪"
+                    else -> "未标定坐标"
+                },
+                onSettingsClick = {
+                    val pkg = uiState.selectedAppPackage
+                    if (pkg.isNullOrBlank()) {
+                        viewModel.toggleAppSelector()
+                    } else {
+                        viewModel.startCalibration(pkg)
+                    }
+                },
                 onAppSelectorClick = { viewModel.toggleAppSelector() },
                 onRefreshClick = {
                     if (selectedTab == HomeTab.CLOUD) viewModel.loadCloudMusic(refresh = true)
                     else viewModel.scanLocalMidiFiles()
+                    viewModel.refreshCoordinateStatus()
                 },
                 onProfileClick = onNavigateToProfile
             )
@@ -390,11 +404,40 @@ fun HomeScreen(
                 apps = SupportedApps.apps,
                 onAppSelected = { app ->
                     viewModel.selectTargetApp(app.packageName)
-                    // 选完 App 后直接触发待播音乐；playMusic 内部会检查坐标，
-                    // 没坐标时自动启动 FloatingCalibrationService 悬浮标定流程
-                    uiState.pendingMusicId?.let { viewModel.playMusic(it) }
                 },
                 onDismiss = { viewModel.toggleAppSelector() }
+            )
+        }
+
+        // 未标定坐标引导
+        if (uiState.showCalibrationPrompt) {
+            val pkg = uiState.calibratingAppPackage ?: uiState.selectedAppPackage
+            val appName = pkg?.let { SupportedApps.findByPackage(it)?.appName } ?: "目标应用"
+            AlertDialog(
+                onDismissRequest = { viewModel.dismissCalibrationPrompt() },
+                title = { Text("需要标定琴键坐标", color = TextPrimary, fontWeight = FontWeight.Bold) },
+                text = {
+                    Text(
+                        "「$appName」还没有可用的音符坐标。\n\n请打开该应用的钢琴界面，用悬浮标定把标记对齐到每个琴键后保存。不同游戏键位数量不同（如原神21键、光遇15键）。",
+                        color = TextHint
+                    )
+                },
+                confirmButton = {
+                    Button(
+                        onClick = {
+                            viewModel.dismissCalibrationPrompt()
+                            pkg?.let { viewModel.startCalibration(it) }
+                        },
+                        colors = ButtonDefaults.buttonColors(containerColor = PrimaryPurple)
+                    ) { Text("开始标定") }
+                },
+                dismissButton = {
+                    TextButton(onClick = { viewModel.dismissCalibrationPrompt() }) {
+                        Text("稍后", color = TextHint)
+                    }
+                },
+                containerColor = SurfaceDark,
+                shape = RoundedCornerShape(20.dp)
             )
         }
 
@@ -456,7 +499,8 @@ private fun LocalMusicList(
         items(musicList, key = { it.id }) { music ->
             MusicCard(
                 music = music,
-                isCurrentlyPlaying = uiState.isPlaying && uiState.currentMusicId == music.id,
+                isCurrentlyPlaying = uiState.currentMusicId == music.id,
+                isPaused = uiState.currentMusicId == music.id && !uiState.isPlaying,
                 onClick = { onMusicClick(music) }
             )
         }
@@ -594,66 +638,106 @@ private fun CloudMusicCard(music: MusicItem, onClick: () -> Unit) {
 @Composable
 private fun HomeTopBar(
     selectedAppName: String,
+    hasCoordinates: Boolean,
+    coordinateHint: String,
     onSettingsClick: () -> Unit,
     onAppSelectorClick: () -> Unit,
     onRefreshClick: () -> Unit,
     onProfileClick: () -> Unit
 ) {
     Surface(modifier = Modifier.fillMaxWidth(), color = SurfaceDark, shadowElevation = 4.dp) {
-        Row(
-            modifier = Modifier.padding(horizontal = 16.dp, vertical = 12.dp).fillMaxWidth(),
-            horizontalArrangement = Arrangement.SpaceBetween,
-            verticalAlignment = Alignment.CenterVertically
-        ) {
-            Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                Text("🎹", style = MaterialTheme.typography.headlineSmall)
-                Text(
-                    text = "Magic Piano",
-                    style = MaterialTheme.typography.headlineSmall.copy(
-                        fontWeight = FontWeight.Bold,
-                        brush = Brush.horizontalGradient(listOf(PrimaryPurpleLight, SecondaryCyan))
-                    )
-                )
-            }
-
-            Row(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalAlignment = Alignment.CenterVertically) {
-                IconButton(onClick = onRefreshClick) {
-                    Icon(Icons.Default.Refresh, contentDescription = "刷新", tint = TextPrimary, modifier = Modifier.size(22.dp))
-                }
-
-                Surface(
-                    onClick = onAppSelectorClick,
-                    shape = RoundedCornerShape(20.dp),
-                    color = PrimaryPurple.copy(alpha = 0.15f),
-                    border = androidx.compose.foundation.BorderStroke(1.dp, PrimaryPurple.copy(alpha = 0.3f))
-                ) {
-                    Row(
-                        modifier = Modifier.padding(horizontal = 12.dp, vertical = 6.dp),
-                        verticalAlignment = Alignment.CenterVertically,
-                        horizontalArrangement = Arrangement.spacedBy(4.dp)
-                    ) {
-                        Text("🎵", style = MaterialTheme.typography.bodyLarge)
-                        Text(selectedAppName, style = MaterialTheme.typography.labelMedium, color = PrimaryPurpleLight, maxLines = 1, overflow = TextOverflow.Ellipsis)
-                        Icon(Icons.Default.KeyboardArrowDown, contentDescription = null, tint = PrimaryPurpleLight, modifier = Modifier.size(16.dp))
-                    }
-                }
-
-                // 用户头像按钮
-                IconButton(onClick = onProfileClick) {
-                    val avatar = AuthManager.avatar
-                    if (avatar.isNotBlank()) {
-                        AsyncImage(
-                            model = avatar,
-                            contentDescription = "个人中心",
-                            modifier = Modifier.size(30.dp).clip(CircleShape)
+        Column {
+            Row(
+                modifier = Modifier.padding(horizontal = 16.dp, vertical = 12.dp).fillMaxWidth(),
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    Text("🎹", style = MaterialTheme.typography.headlineSmall)
+                    Text(
+                        text = "Magic Piano",
+                        style = MaterialTheme.typography.headlineSmall.copy(
+                            fontWeight = FontWeight.Bold,
+                            brush = Brush.horizontalGradient(listOf(PrimaryPurpleLight, SecondaryCyan))
                         )
-                    } else {
-                        Icon(Icons.Default.AccountCircle, contentDescription = "个人中心", tint = PrimaryPurpleLight, modifier = Modifier.size(28.dp))
-                    }
+                    )
                 }
 
-                IconButton(onClick = onSettingsClick) {
-                    Icon(Icons.Default.Settings, contentDescription = "标定坐标", tint = TextPrimary, modifier = Modifier.size(22.dp))
+                Row(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalAlignment = Alignment.CenterVertically) {
+                    IconButton(onClick = onRefreshClick) {
+                        Icon(Icons.Default.Refresh, contentDescription = "刷新", tint = TextPrimary, modifier = Modifier.size(22.dp))
+                    }
+
+                    Surface(
+                        onClick = onAppSelectorClick,
+                        shape = RoundedCornerShape(20.dp),
+                        color = PrimaryPurple.copy(alpha = 0.15f),
+                        border = androidx.compose.foundation.BorderStroke(1.dp, PrimaryPurple.copy(alpha = 0.3f))
+                    ) {
+                        Row(
+                            modifier = Modifier.padding(horizontal = 12.dp, vertical = 6.dp),
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.spacedBy(4.dp)
+                        ) {
+                            Text("🎵", style = MaterialTheme.typography.bodyLarge)
+                            Text(selectedAppName, style = MaterialTheme.typography.labelMedium, color = PrimaryPurpleLight, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                            Icon(Icons.Default.KeyboardArrowDown, contentDescription = null, tint = PrimaryPurpleLight, modifier = Modifier.size(16.dp))
+                        }
+                    }
+
+                    IconButton(onClick = onProfileClick) {
+                        val avatar = AuthManager.avatar
+                        if (avatar.isNotBlank()) {
+                            AsyncImage(
+                                model = avatar,
+                                contentDescription = "个人中心",
+                                modifier = Modifier.size(30.dp).clip(CircleShape)
+                            )
+                        } else {
+                            Icon(Icons.Default.AccountCircle, contentDescription = "个人中心", tint = PrimaryPurpleLight, modifier = Modifier.size(28.dp))
+                        }
+                    }
+
+                    IconButton(onClick = onSettingsClick) {
+                        Icon(
+                            Icons.Default.Settings,
+                            contentDescription = "标定坐标",
+                            tint = if (hasCoordinates) SuccessGreen else ErrorRed,
+                            modifier = Modifier.size(22.dp)
+                        )
+                    }
+                }
+            }
+            // 坐标状态条
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(horizontal = 16.dp)
+                    .padding(bottom = 8.dp),
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(8.dp)
+            ) {
+                Box(
+                    modifier = Modifier
+                        .size(8.dp)
+                        .clip(CircleShape)
+                        .background(if (hasCoordinates) SuccessGreen else ErrorRed)
+                )
+                Text(
+                    text = coordinateHint,
+                    style = MaterialTheme.typography.labelSmall,
+                    color = if (hasCoordinates) SuccessGreen else TextHint,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
+                    modifier = Modifier.weight(1f)
+                )
+                if (!hasCoordinates && selectedAppName != "选择目标应用") {
+                    Text(
+                        text = "点击齿轮标定",
+                        style = MaterialTheme.typography.labelSmall,
+                        color = SecondaryCyan,
+                        modifier = Modifier.clickable(onClick = onSettingsClick)
+                    )
                 }
             }
         }
@@ -711,17 +795,23 @@ private fun TagFilterRow(tags: List<String>, selectedTag: String, onTagClick: (S
 }
 
 @Composable
-private fun MusicCard(music: MusicEntity, isCurrentlyPlaying: Boolean, onClick: () -> Unit) {
+private fun MusicCard(
+    music: MusicEntity,
+    isCurrentlyPlaying: Boolean,
+    isPaused: Boolean = false,
+    onClick: () -> Unit
+) {
     val tags = remember(music.tags) { music.getTagList() }
+    val active = isCurrentlyPlaying
 
     Card(
         modifier = Modifier.fillMaxWidth().clickable(onClick = onClick),
         colors = CardDefaults.cardColors(
-            containerColor = if (isCurrentlyPlaying) PrimaryPurple.copy(alpha = 0.15f) else SurfaceDark
+            containerColor = if (active) PrimaryPurple.copy(alpha = 0.15f) else SurfaceDark
         ),
         shape = RoundedCornerShape(16.dp),
-        elevation = CardDefaults.cardElevation(defaultElevation = if (isCurrentlyPlaying) 8.dp else 2.dp),
-        border = if (isCurrentlyPlaying) androidx.compose.foundation.BorderStroke(1.dp, PrimaryPurpleLight) else null
+        elevation = CardDefaults.cardElevation(defaultElevation = if (active) 8.dp else 2.dp),
+        border = if (active) androidx.compose.foundation.BorderStroke(1.dp, PrimaryPurpleLight) else null
     ) {
         Row(
             modifier = Modifier.padding(14.dp).fillMaxWidth(),
@@ -735,17 +825,20 @@ private fun MusicCard(music: MusicEntity, isCurrentlyPlaying: Boolean, onClick: 
             ) {
                 Box(
                     modifier = Modifier.size(50.dp).clip(RoundedCornerShape(12.dp))
-                        .background(if (isCurrentlyPlaying) Brush.linearGradient(listOf(PrimaryPurpleLight, SecondaryCyan)) else Brush.linearGradient(listOf(PrimaryPurple, SecondaryCyan))),
+                        .background(if (active) Brush.linearGradient(listOf(PrimaryPurpleLight, SecondaryCyan)) else Brush.linearGradient(listOf(PrimaryPurple, SecondaryCyan))),
                     contentAlignment = Alignment.Center
                 ) {
-                    if (isCurrentlyPlaying) PlayingAnimation() else Icon(Icons.Default.PlayArrow, contentDescription = null, tint = Color.White, modifier = Modifier.size(26.dp))
+                    when {
+                        active && !isPaused -> PlayingAnimation()
+                        else -> Icon(Icons.Default.PlayArrow, contentDescription = null, tint = Color.White, modifier = Modifier.size(26.dp))
+                    }
                 }
 
                 Column(modifier = Modifier.fillMaxWidth(0.75f)) {
                     Text(
                         text = music.title,
                         style = MaterialTheme.typography.titleMedium,
-                        color = if (isCurrentlyPlaying) PrimaryPurpleLight else TextPrimary,
+                        color = if (active) PrimaryPurpleLight else TextPrimary,
                         fontWeight = FontWeight.Bold,
                         maxLines = 2,
                         overflow = TextOverflow.Ellipsis
@@ -781,13 +874,13 @@ private fun MusicCard(music: MusicEntity, isCurrentlyPlaying: Boolean, onClick: 
 
             Surface(
                 onClick = onClick, shape = CircleShape,
-                color = if (isCurrentlyPlaying) PrimaryPurpleLight else PrimaryPurple.copy(alpha = 0.3f)
+                color = if (active) PrimaryPurpleLight else PrimaryPurple.copy(alpha = 0.3f)
             ) {
-                Icon(
-                    Icons.Default.PlayArrow,
-                    contentDescription = if (isCurrentlyPlaying) "暂停" else "播放",
-                    tint = if (isCurrentlyPlaying) BackgroundDark else PrimaryPurpleLight,
-                    modifier = Modifier.padding(10.dp).size(22.dp)
+                Text(
+                    text = if (active && !isPaused) "⏸" else "▶",
+                    color = if (active) BackgroundDark else PrimaryPurpleLight,
+                    fontSize = 16.sp,
+                    modifier = Modifier.padding(horizontal = 12.dp, vertical = 10.dp)
                 )
             }
         }

@@ -81,9 +81,57 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         // 初始化 AuthManager
         AuthManager.init(application)
 
+        // 恢复上次选择的目标游戏，并刷新坐标状态
+        val prefs = application.getSharedPreferences(PREFS_NAME, Application.MODE_PRIVATE)
+        val savedPkg = prefs.getString(KEY_SELECTED_APP, null)
+        if (!savedPkg.isNullOrBlank()) {
+            _uiState.value = _uiState.value.copy(selectedAppPackage = savedPkg)
+            refreshCoordinateStatus(savedPkg)
+        }
+
+        // 同步悬浮播放器 / 调度器状态到主界面
+        performanceScheduler.addStateListener(object : PerformanceScheduler.PlaybackStateListener {
+            override fun onPlaybackStarted() {
+                _uiState.value = _uiState.value.copy(isPlaying = true)
+            }
+            override fun onPlaybackPaused() {
+                _uiState.value = _uiState.value.copy(isPlaying = false)
+            }
+            override fun onPlaybackResumed() {
+                _uiState.value = _uiState.value.copy(isPlaying = true)
+            }
+            override fun onPlaybackStopped() {
+                // 不清除曲目信息：切歌时会 stop 再 start，避免底部栏闪烁消失
+                _uiState.value = _uiState.value.copy(isPlaying = false)
+            }
+            override fun onPlaybackFinished() {
+                _uiState.value = _uiState.value.copy(isPlaying = false)
+            }
+        })
+
         // 扫描本地 MIDI
         scanLocalMidiFiles()
         loadMusicList()
+    }
+
+    companion object {
+        private const val PREFS_NAME = "magic_piano_prefs"
+        private const val KEY_SELECTED_APP = "selected_app_package"
+    }
+
+    fun refreshCoordinateStatus(packageName: String? = _uiState.value.selectedAppPackage) {
+        if (packageName.isNullOrBlank()) {
+            _uiState.value = _uiState.value.copy(hasCoordinates = false, coordinateSchemeName = null)
+            return
+        }
+        viewModelScope.launch {
+            val entity = coordinateRepository.getCoordinateByPackage(packageName)
+            val valid = entity != null && coordinateRepository.isCoordinateEntityValid(entity)
+            _uiState.value = _uiState.value.copy(
+                hasCoordinates = valid,
+                coordinateSchemeName = if (valid) entity?.schemeName?.ifBlank { null } else null
+            )
+        }
     }
 
     // ========== 本地音乐 ==========
@@ -303,92 +351,42 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                 val packageName = _uiState.value.selectedAppPackage
 
                 if (packageName.isNullOrBlank()) {
-                    _uiState.value = _uiState.value.copy(showAppSelector = true)
+                    _uiState.value = _uiState.value.copy(
+                        showAppSelector = true,
+                        pendingMusicId = "cloud_${music.id}",
+                        pendingCloudMusicJson = music.id.toString()
+                    )
                     return@launch
                 }
 
-                // 构建音乐URL
-                val musicUrl = "http://39.107.213.164:8090${music.path}"
-                Log.d("MainViewModel", "Playing cloud music: ${music.name} from $musicUrl")
-
-                // 下载MIDI文件到本地
-                val app = getApplication<Application>()
-                val midiDir = java.io.File("${app.filesDir.absolutePath}/midi_music")
-                if (!midiDir.exists()) midiDir.mkdirs()
-
-                val localFile = java.io.File(midiDir, "cloud_${music.id}_${music.name}")
-                if (!localFile.exists()) {
-                    try {
-                        okhttp3.OkHttpClient().newCall(
-                            okhttp3.Request.Builder().url(musicUrl).build()
-                        ).execute().use { response ->
-                            response.body?.byteStream()?.use { input ->
-                                localFile.outputStream().use { output ->
-                                    input.copyTo(output)
-                                }
-                            }
-                        }
-                    } catch (e: Exception) {
-                        Log.e("MainViewModel", "Download MIDI error", e)
-                    }
-                }
-
-                // 添加最近播放记录
-                apiRepository.addRecentPlay(token, music.id)
-
-                // 解析并播放
-                val sequence = midiParser.parseMidiFile(localFile.absolutePath)
-                MidiTestUtils.printNoteStatistics(sequence)
-                Log.d("MainViewModel", "Cloud MIDI: ${sequence.noteCount} notes, ${sequence.duration}ms")
+                if (!ensurePlayPermissions()) return@launch
 
                 val coordEntity = coordinateRepository.getCoordinateByPackage(packageName)
-                if (coordEntity == null) {
-                    startCalibration(packageName)
+                if (coordEntity == null || !coordinateRepository.isCoordinateEntityValid(coordEntity)) {
+                    _uiState.value = _uiState.value.copy(
+                        errorMessage = "请先为「${SupportedApps.findByPackage(packageName)?.appName ?: packageName}」标定琴键坐标",
+                        showCalibrationPrompt = true,
+                        calibratingAppPackage = packageName
+                    )
                     return@launch
                 }
-                val appInfo = SupportedApps.findByPackage(packageName) ?: SupportedApps.getDefault()
-                val coordList = com.google.gson.Gson().fromJson(
-                    coordEntity.keyCoordinates,
-                    Array<com.example.magicpinao.core.data.PianoKeyCoordinate>::class.java
-                ).toList()
-                coordinateManager.setCoordinates(coordList)
 
-                val service = com.example.magicpinao.core.accessibility.PianoAccessibilityService.instance
-                if (service == null) {
-                    _uiState.value = _uiState.value.copy(errorMessage = "无障碍服务未启动", isPlaying = false)
-                    return@launch
-                }
-                service.setCoordinates(coordList)
+                apiRepository.addRecentPlay(token, music.id)
 
+                val app = getApplication<Application>()
                 _uiState.value = _uiState.value.copy(
-                    isPlaying = true,
-                    currentMusicId = music.id.toString(),
+                    currentMusicId = "cloud_${music.id}",
                     currentMusicTitle = music.name,
-                    errorMessage = null
+                    errorMessage = null,
+                    hasCoordinates = true,
+                    coordinateSchemeName = coordEntity.schemeName.ifBlank { null }
                 )
 
-                com.example.magicpinao.core.accessibility.FloatingPlayerService.stop(app)
-                kotlinx.coroutines.delay(200)
+                // 统一由悬浮播放器负责下载/解析/调度，避免双重控制
                 com.example.magicpinao.core.accessibility.FloatingPlayerService.start(
-                    app, packageName, music.name, music.id.toString()
+                    app, packageName, music.name, "cloud_${music.id}", autoPlay = true
                 )
-
-                val root = service.rootInActiveWindow
-                val fgPkg = root?.packageName?.toString()
-                root?.recycle()
-                if (fgPkg != packageName) {
-                    service.openTargetApp(packageName)
-                    kotlinx.coroutines.delay(1500)
-                } else {
-                    kotlinx.coroutines.delay(300)
-                }
-
-                performanceScheduler.setCoordinateManager(coordinateManager)
-                val lt1 = try { com.example.magicpinao.core.calibration.PianoLayoutType.valueOf(appInfo.layoutType) } catch (e: Exception) { com.example.magicpinao.core.calibration.PianoLayoutType.LAYOUT_21 }
-                performanceScheduler.schedule(sequence, packageName, appInfo.baseNote, appInfo.keyCount, appInfo.whiteKeysOnly, lt1)
-                performanceScheduler.start()
-
-                Log.d("MainViewModel", "=== CLOUD PLAYBACK: ${sequence.noteCount} notes ===")
+                Log.d("MainViewModel", "Delegated cloud playback to FloatingPlayer: ${music.name}")
             } catch (e: Exception) {
                 Log.e("MainViewModel", "Cloud play error", e)
                 _uiState.value = _uiState.value.copy(errorMessage = "播放失败: ${e.message}", isPlaying = false)
@@ -492,13 +490,39 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         }
     }
 
-    // ========== 播放控制（复用原有逻辑） ==========
+    // ========== 播放控制 ==========
 
     fun selectTargetApp(packageName: String) {
+        getApplication<Application>()
+            .getSharedPreferences(PREFS_NAME, Application.MODE_PRIVATE)
+            .edit()
+            .putString(KEY_SELECTED_APP, packageName)
+            .apply()
         _uiState.value = _uiState.value.copy(
             selectedAppPackage = packageName,
-            showAppSelector = false
+            showAppSelector = false,
+            showCalibrationPrompt = false
         )
+        refreshCoordinateStatus(packageName)
+
+        val pending = _uiState.value.pendingMusicId
+        if (!pending.isNullOrBlank()) {
+            _uiState.value = _uiState.value.copy(pendingMusicId = null)
+            if (!pending.startsWith("cloud_")) {
+                playMusic(pending, packageName)
+            }
+        } else {
+            viewModelScope.launch {
+                val has = coordinateRepository.hasCoordinateForPackage(packageName)
+                if (!has) {
+                    _uiState.value = _uiState.value.copy(
+                        showCalibrationPrompt = true,
+                        calibratingAppPackage = packageName,
+                        errorMessage = "「${SupportedApps.findByPackage(packageName)?.appName}」尚未标定坐标，请先标定"
+                    )
+                }
+            }
+        }
     }
 
     fun toggleAppSelector() {
@@ -507,10 +531,32 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         )
     }
 
+    fun dismissCalibrationPrompt() {
+        _uiState.value = _uiState.value.copy(showCalibrationPrompt = false)
+    }
+
     fun checkAccessibilityPermission(): Boolean = permissionManager.isAccessibilityServiceEnabled()
     fun openAccessibilitySettings() = permissionManager.openAccessibilitySettings()
     fun openOverlaySettings() = permissionManager.openOverlaySettings()
     fun checkOverlayPermission(): Boolean = permissionManager.hasOverlayPermission()
+
+    private fun ensurePlayPermissions(): Boolean {
+        if (!permissionManager.hasOverlayPermission()) {
+            _uiState.value = _uiState.value.copy(
+                showPermissionDialog = true,
+                permissionType = PermissionType.OVERLAY
+            )
+            return false
+        }
+        if (!permissionManager.isAccessibilityServiceEnabled()) {
+            _uiState.value = _uiState.value.copy(
+                showPermissionDialog = true,
+                permissionType = PermissionType.ACCESSIBILITY
+            )
+            return false
+        }
+        return true
+    }
 
     fun playMusic(musicId: String) {
         val packageName = _uiState.value.selectedAppPackage
@@ -537,8 +583,11 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         }
     }
 
-    fun startCalibration(packageName: String) {
-        val appInfo = SupportedApps.findByPackage(packageName) ?: SupportedApps.getDefault()
+    fun startCalibration(packageName: String = _uiState.value.selectedAppPackage ?: "") {
+        val pkg = packageName.ifBlank {
+            _uiState.value.selectedAppPackage ?: return
+        }
+        val appInfo = SupportedApps.findByPackage(pkg) ?: SupportedApps.getDefault()
         if (!permissionManager.hasOverlayPermission()) {
             _uiState.value = _uiState.value.copy(showPermissionDialog = true, permissionType = PermissionType.OVERLAY)
             return
@@ -547,74 +596,67 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
             _uiState.value = _uiState.value.copy(showPermissionDialog = true, permissionType = PermissionType.ACCESSIBILITY)
             return
         }
-        _uiState.value = _uiState.value.copy(isCalibrating = true, calibratingAppPackage = packageName)
+        _uiState.value = _uiState.value.copy(
+            isCalibrating = true,
+            calibratingAppPackage = pkg,
+            showCalibrationPrompt = false
+        )
+        com.example.magicpinao.core.accessibility.FloatingPlayerService.stop(getApplication())
+        performanceScheduler.stop()
         com.example.magicpinao.core.accessibility.FloatingCalibrationService.start(
-            getApplication(), packageName, appInfo.keyCount, appInfo.layoutType
+            getApplication(), pkg, appInfo.keyCount, appInfo.layoutType, openTargetApp = true
         )
     }
 
     fun finishCalibration() {
         _uiState.value = _uiState.value.copy(isCalibrating = false, calibratingAppPackage = null)
+        refreshCoordinateStatus()
         loadMusicList()
     }
 
     private fun playMusic(musicId: String, packageName: String) {
         viewModelScope.launch {
             try {
+                if (!ensurePlayPermissions()) return@launch
+
                 val music = musicRepository.getMusicById(musicId) ?: run {
                     _uiState.value = _uiState.value.copy(errorMessage = "音乐未找到")
                     return@launch
                 }
-                val sequence = midiParser.parseMidiFile(music.filePath)
-                MidiTestUtils.printNoteStatistics(sequence)
 
                 val coordEntity = coordinateRepository.getCoordinateByPackage(packageName)
-                if (coordEntity == null) {
-                    startCalibration(packageName)
+                if (coordEntity == null || !coordinateRepository.isCoordinateEntityValid(coordEntity)) {
+                    _uiState.value = _uiState.value.copy(
+                        errorMessage = "请先为「${SupportedApps.findByPackage(packageName)?.appName ?: packageName}」标定琴键坐标",
+                        showCalibrationPrompt = true,
+                        calibratingAppPackage = packageName,
+                        pendingMusicId = musicId
+                    )
                     return@launch
                 }
-                val app = SupportedApps.findByPackage(packageName) ?: SupportedApps.getDefault()
-                val coordList = com.google.gson.Gson().fromJson(
-                    coordEntity.keyCoordinates,
-                    Array<com.example.magicpinao.core.data.PianoKeyCoordinate>::class.java
-                ).toList()
-                coordinateManager.setCoordinates(coordList)
 
-                val service = com.example.magicpinao.core.accessibility.PianoAccessibilityService.instance
-                if (service == null) {
-                    _uiState.value = _uiState.value.copy(errorMessage = "无障碍服务未启动", isPlaying = false)
+                if (_uiState.value.currentMusicId == musicId && performanceScheduler.isPlaying) {
+                    pausePlayback()
                     return@launch
                 }
-                service.setCoordinates(coordList)
+                if (_uiState.value.currentMusicId == musicId && performanceScheduler.isPaused) {
+                    resumePlayback()
+                    return@launch
+                }
 
                 _uiState.value = _uiState.value.copy(
-                    isPlaying = true,
                     currentMusicId = musicId,
                     currentMusicTitle = music.title,
-                    errorMessage = null
+                    errorMessage = null,
+                    hasCoordinates = true,
+                    coordinateSchemeName = coordEntity.schemeName.ifBlank { null },
+                    pendingMusicId = null
                 )
 
-                com.example.magicpinao.core.accessibility.FloatingPlayerService.stop(getApplication())
-                kotlinx.coroutines.delay(200)
                 com.example.magicpinao.core.accessibility.FloatingPlayerService.start(
-                    getApplication(), packageName, music.title, musicId
+                    getApplication(), packageName, music.title, musicId, autoPlay = true
                 )
-
-                val root = service.rootInActiveWindow
-                val fgPkg = root?.packageName?.toString()
-                root?.recycle()
-                if (fgPkg != packageName) {
-                    service.openTargetApp(packageName)
-                    kotlinx.coroutines.delay(1500)
-                } else {
-                    kotlinx.coroutines.delay(300)
-                }
-
-                performanceScheduler.setCoordinateManager(coordinateManager)
-                performanceScheduler.schedule(sequence, packageName, app.baseNote, app.keyCount, app.whiteKeysOnly)
-                performanceScheduler.start()
-
-                Log.d("MainViewModel", "=== PLAYBACK: ${sequence.noteCount} notes ===")
+                Log.d("MainViewModel", "Delegated local playback to FloatingPlayer: ${music.title}")
             } catch (e: Exception) {
                 Log.e("MainViewModel", "Play error", e)
                 _uiState.value = _uiState.value.copy(errorMessage = "播放失败: ${e.message}", isPlaying = false)
@@ -635,7 +677,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     fun stopPlayback() {
         performanceScheduler.stop()
         com.example.magicpinao.core.accessibility.FloatingPlayerService.stop(getApplication())
-        _uiState.value = _uiState.value.copy(isPlaying = false, currentMusicId = null)
+        _uiState.value = _uiState.value.copy(isPlaying = false, currentMusicId = null, currentMusicTitle = null)
     }
 
     fun testTap(x: Int, y: Int, onResult: (Boolean, String) -> Unit) {
@@ -669,8 +711,12 @@ data class MainUiState(
     val selectedAppPackage: String? = null,
     val showAppSelector: Boolean = false,
     val pendingMusicId: String? = null,
+    val pendingCloudMusicJson: String? = null,
     val isCalibrating: Boolean = false,
-    val calibratingAppPackage: String? = null
+    val calibratingAppPackage: String? = null,
+    val hasCoordinates: Boolean = false,
+    val coordinateSchemeName: String? = null,
+    val showCalibrationPrompt: Boolean = false
 )
 
 sealed class AppCheckResult {

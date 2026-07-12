@@ -58,10 +58,33 @@ class CoordinateRepository(private val context: Context) {
     }
     
     /**
+     * 检查坐标是否可用于实际点击（排除归一化 0~1 误存为像素等坏数据）
+     */
+    suspend fun hasValidCoordinateForPackage(packageName: String): Boolean {
+        val entity = getCoordinateByPackage(packageName) ?: return false
+        return isCoordinateEntityValid(entity)
+    }
+
+    fun isCoordinateEntityValid(entity: CoordinateEntity): Boolean {
+        return try {
+            val coords = jsonToKeyCoordinates(entity.keyCoordinates)
+            if (coords.isEmpty()) return false
+            val xs = coords.map { it.centerX }
+            val ys = coords.map { it.centerY }
+            val spanX = (xs.maxOrNull() ?: 0) - (xs.minOrNull() ?: 0)
+            val spanY = (ys.maxOrNull() ?: 0) - (ys.minOrNull() ?: 0)
+            // 有效标定跨度至少几十像素；归一化误存通常全是 0/1
+            spanX >= 80 && spanY >= 40 && coords.any { it.centerX > 10 && it.centerY > 10 }
+        } catch (_: Exception) {
+            false
+        }
+    }
+
+    /**
      * 检查是否存在指定包名的坐标配置
      */
     suspend fun hasCoordinateForPackage(packageName: String): Boolean {
-        return coordinateDao.hasCoordinateForPackage(packageName)
+        return hasValidCoordinateForPackage(packageName)
     }
 
     suspend fun getSchemesForPackage(packageName: String): List<CoordinateEntity> {

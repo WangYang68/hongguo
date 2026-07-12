@@ -63,6 +63,7 @@ class FloatingPlayerService : Service(), PerformanceScheduler.PlaybackStateListe
         const val EXTRA_MUSIC_TITLE = "EXTRA_MUSIC_TITLE"
         const val EXTRA_TARGET_PACKAGE = "EXTRA_TARGET_PACKAGE"
         const val EXTRA_MUSIC_ID = "EXTRA_MUSIC_ID"
+        const val EXTRA_AUTO_PLAY = "EXTRA_AUTO_PLAY"
 
         var instance: FloatingPlayerService? = null
             private set
@@ -70,12 +71,19 @@ class FloatingPlayerService : Service(), PerformanceScheduler.PlaybackStateListe
         /** 目标应用包名（静态，跨实例保持） */
         var targetPackage: String? = null
 
-        fun start(context: Context, packageName: String, musicTitle: String = "", musicId: String? = null) {
+        fun start(
+            context: Context,
+            packageName: String,
+            musicTitle: String = "",
+            musicId: String? = null,
+            autoPlay: Boolean = false
+        ) {
             targetPackage = packageName
             val intent = Intent(context, FloatingPlayerService::class.java).apply {
                 action = ACTION_START
                 putExtra(EXTRA_MUSIC_TITLE, musicTitle)
                 putExtra(EXTRA_TARGET_PACKAGE, packageName)
+                putExtra(EXTRA_AUTO_PLAY, autoPlay)
                 if (musicId != null) putExtra(EXTRA_MUSIC_ID, musicId)
             }
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
@@ -176,8 +184,12 @@ class FloatingPlayerService : Service(), PerformanceScheduler.PlaybackStateListe
     private var progressRunnable: Runnable? = null
     private var isUserSeeking = false  // 用户正在拖拽进度条
 
-    // 收缩状态
+    // 收缩 / 缩放
     private var isCollapsed = false
+    private var panelWidthPx = 0
+    private var pendingAutoPlay = false
+    private var resizeStartWidth = 0
+    private var resizeStartX = 0f
 
     override fun onCreate() {
         super.onCreate()
@@ -196,8 +208,14 @@ class FloatingPlayerService : Service(), PerformanceScheduler.PlaybackStateListe
                 currentMusicTitle = intent.getStringExtra(EXTRA_MUSIC_TITLE) ?: ""
                 currentPackageName = intent.getStringExtra(EXTRA_TARGET_PACKAGE) ?: targetPackage ?: ""
                 currentMusicId = intent.getStringExtra(EXTRA_MUSIC_ID)
+                pendingAutoPlay = intent.getBooleanExtra(EXTRA_AUTO_PLAY, false)
                 if (currentPackageName.isNotEmpty()) {
                     targetPackage = currentPackageName
+                }
+                // 重新启动时先停掉旧演奏，避免双重调度
+                if (scheduler.isPlaying || scheduler.isPaused) {
+                    scheduler.stop()
+                    isPlaying = false
                 }
                 startForegroundNotification()
                 createFloatingPlayer()
@@ -313,22 +331,10 @@ class FloatingPlayerService : Service(), PerformanceScheduler.PlaybackStateListe
 
     private fun createFloatingPlayer() {
         removeFloatingView()
+        windowManager = getSystemService(WINDOW_SERVICE) as WindowManager
 
-        val displayId = PianoAccessibilityService.instance?.getOverlayDisplayId() ?: -1
-        if (displayId > 0) {
-            try {
-                val ctx = createWindowContext(displayId, null)
-                windowManager = ctx.getSystemService(WINDOW_SERVICE) as WindowManager
-                Log.d(TAG, "Floating player using WindowManager for display $displayId")
-            } catch (e: Exception) {
-                Log.w(TAG, "Failed to create WindowManager for display $displayId", e)
-                windowManager = getSystemService(WINDOW_SERVICE) as WindowManager
-            }
-        } else {
-            windowManager = getSystemService(WINDOW_SERVICE) as WindowManager
-        }
-
-        val dm = PianoAccessibilityService.instance?.getOverlayDisplayMetrics() ?: resources.displayMetrics
+        val dm = resources.displayMetrics
+        panelWidthPx = (300 * dm.density).toInt()
         layoutParams = WindowManager.LayoutParams().apply {
             type = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
                 WindowManager.LayoutParams.TYPE_APPLICATION_OVERLAY
@@ -337,13 +343,14 @@ class FloatingPlayerService : Service(), PerformanceScheduler.PlaybackStateListe
                 WindowManager.LayoutParams.TYPE_PHONE
             }
             flags = WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE or
-                    WindowManager.LayoutParams.FLAG_LAYOUT_NO_LIMITS
+                    WindowManager.LayoutParams.FLAG_LAYOUT_NO_LIMITS or
+                    WindowManager.LayoutParams.FLAG_HARDWARE_ACCELERATED
             format = PixelFormat.TRANSLUCENT
-            width = WindowManager.LayoutParams.WRAP_CONTENT
+            width = panelWidthPx
             height = WindowManager.LayoutParams.WRAP_CONTENT
             gravity = Gravity.TOP or Gravity.START
-            x = dm.widthPixels - 320
-            y = dm.heightPixels / 4
+            x = (dm.widthPixels - panelWidthPx - 24).coerceAtLeast(0)
+            y = dm.heightPixels / 5
         }
 
         floatingView = LayoutInflater.from(this).inflate(R.layout.floating_player_view, null)
@@ -371,6 +378,9 @@ class FloatingPlayerService : Service(), PerformanceScheduler.PlaybackStateListe
             handleDrag(event)
         }
 
+        // 右下角缩放
+        ensureResizeHandle()
+
         // 收缩/展开
         floatingView?.findViewById<TextView>(R.id.btnCollapse)?.setOnClickListener {
             toggleCollapse()
@@ -382,6 +392,9 @@ class FloatingPlayerService : Service(), PerformanceScheduler.PlaybackStateListe
             removeFloatingView()
             stopSelf()
         }
+
+        // 标定入口（在列表按钮旁动态加入）
+        ensureCalibrateButton()
 
         // 上一首
         floatingView?.findViewById<TextView>(R.id.btnPrev)?.setOnClickListener {
@@ -414,7 +427,12 @@ class FloatingPlayerService : Service(), PerformanceScheduler.PlaybackStateListe
             stopPlayback()
         }
 
-        // 搜索框监听
+        // 搜索框：临时获取焦点
+        etSearch?.setOnTouchListener { v, _ ->
+            requestOverlayFocus(true)
+            v.requestFocus()
+            false
+        }
         etSearch?.addTextChangedListener(object : android.text.TextWatcher {
             override fun afterTextChanged(s: android.text.Editable?) {
                 searchQuery = s?.toString() ?: ""
@@ -428,6 +446,8 @@ class FloatingPlayerService : Service(), PerformanceScheduler.PlaybackStateListe
         musicListView?.setOnItemClickListener { _, _, position, _ ->
             selectFilteredMusic(position)
             hideMusicListPanel()
+            requestOverlayFocus(false)
+            startPlayback()
         }
 
         // 速度按钮
@@ -438,6 +458,10 @@ class FloatingPlayerService : Service(), PerformanceScheduler.PlaybackStateListe
 
         // 进度条拖拽 — 拖动时动态 seek
         progressBar?.max = 1000
+        progressBar?.setOnTouchListener { _, _ ->
+            requestOverlayFocus(true)
+            false
+        }
         progressBar?.setOnSeekBarChangeListener(object : android.widget.SeekBar.OnSeekBarChangeListener {
             override fun onProgressChanged(seekBar: android.widget.SeekBar?, progress: Int, fromUser: Boolean) {
                 if (fromUser) {
@@ -445,31 +469,27 @@ class FloatingPlayerService : Service(), PerformanceScheduler.PlaybackStateListe
                     if (totalMs > 0) {
                         val seekMs = (progress.toLong() * totalMs / 1000)
                         tvCurrentTime?.text = formatTime(seekMs)
-                        // 拖动时实时跳转，实现动态试听
                         scheduler.seekTo(seekMs)
                     }
                 }
             }
             override fun onStartTrackingTouch(seekBar: android.widget.SeekBar?) {
                 isUserSeeking = true
-                // 如果之前在播放，保持播放状态
-                if (!isPlaying && !scheduler.isPaused) {
-                    // 不在播放中，仅选择位置不播放
-                }
+                requestOverlayFocus(true)
             }
             override fun onStopTrackingTouch(seekBar: android.widget.SeekBar?) {
                 isUserSeeking = false
+                requestOverlayFocus(false)
                 val totalMs = scheduler.getDuration()
                 if (totalMs > 0 && seekBar != null) {
                     val seekMs = (seekBar.progress.toLong() * totalMs / 1000)
                     scheduler.seekTo(seekMs)
-                    // 拖完确保播放状态一致
                     if (scheduler.isPaused) {
                         isPlaying = false
                         updatePlayPauseIcon()
                         stopAnimation()
                         tvPlayingIcon?.text = "🎵"
-                    } else {
+                    } else if (scheduler.isPlaying) {
                         isPlaying = true
                         updatePlayPauseIcon()
                         startAnimation()
@@ -488,13 +508,12 @@ class FloatingPlayerService : Service(), PerformanceScheduler.PlaybackStateListe
         updateSpeedButtons(1.0f)
         updateTimeDisplay(0L, 0L)
 
-        val acc = PianoAccessibilityService.instance
-        if (acc != null) {
-            acc.showPlayerFloatingView(floatingView!!, layoutParams!!)
-            Log.d(TAG, "Floating player shown via accessibility service at (${layoutParams?.x}, ${layoutParams?.y})")
-        } else {
+        try {
             windowManager?.addView(floatingView, layoutParams)
-            Log.d(TAG, "Floating player shown directly at (${layoutParams?.x}, ${layoutParams?.y})")
+            Log.d(TAG, "Floating player shown via APPLICATION_OVERLAY at (${layoutParams?.x}, ${layoutParams?.y})")
+        } catch (e: Exception) {
+            Log.e(TAG, "Failed to show floating player", e)
+            Toast.makeText(this, "无法显示悬浮窗: ${e.message}", Toast.LENGTH_LONG).show()
         }
     }
 
@@ -543,6 +562,7 @@ class FloatingPlayerService : Service(), PerformanceScheduler.PlaybackStateListe
                 // 找到当前音乐索引
                 if (currentMusicId != null) {
                     currentMusicIndex = fullMusicList.indexOfFirst { it.id == currentMusicId }
+                    // 统一列表构建后再定位
                 } else if (currentMusicTitle.isNotBlank()) {
                     currentMusicIndex = fullMusicList.indexOfFirst { it.title == currentMusicTitle }
                 }
@@ -552,6 +572,27 @@ class FloatingPlayerService : Service(), PerformanceScheduler.PlaybackStateListe
 
                 // 应用搜索过滤（初始显示全部）
                 applySearchFilter()
+
+                // 根据 musicId / title 定位统一列表
+                if (!currentMusicId.isNullOrBlank()) {
+                    currentUnifiedIndex = unifiedList.indexOfFirst { it.id == currentMusicId || it.id == "local_$currentMusicId" || it.id.removePrefix("local_") == currentMusicId }
+                }
+                if (currentUnifiedIndex < 0 && currentMusicTitle.isNotBlank()) {
+                    currentUnifiedIndex = unifiedList.indexOfFirst { it.title == currentMusicTitle }
+                }
+                if (currentUnifiedIndex < 0 && unifiedList.isNotEmpty() && pendingAutoPlay) {
+                    currentUnifiedIndex = 0
+                }
+                if (currentUnifiedIndex >= 0 && currentUnifiedIndex < unifiedList.size) {
+                    currentMusicTitle = unifiedList[currentUnifiedIndex].title
+                    currentMusicId = unifiedList[currentUnifiedIndex].id
+                    tvMusicTitle?.text = currentMusicTitle
+                }
+
+                if (pendingAutoPlay) {
+                    pendingAutoPlay = false
+                    handler.postDelayed({ startPlayback() }, 400)
+                }
 
             } catch (e: Exception) {
                 Log.e(TAG, "Error loading music list", e)
@@ -859,10 +900,18 @@ class FloatingPlayerService : Service(), PerformanceScheduler.PlaybackStateListe
                 val coordEntity = withContext(Dispatchers.IO) {
                     coordinateRepository.getCoordinateByPackage(pkg)
                 }
-                if (coordEntity == null) {
+                if (coordEntity == null || !coordinateRepository.isCoordinateEntityValid(coordEntity)) {
                     withContext(Dispatchers.Main) {
-                        Toast.makeText(this@FloatingPlayerService, "请先在 ${SupportedApps.findByPackage(pkg)?.appName ?: pkg} 上标定琴键坐标", Toast.LENGTH_LONG).show()
+                        Toast.makeText(
+                            this@FloatingPlayerService,
+                            "请先标定「${SupportedApps.findByPackage(pkg)?.appName ?: pkg}」琴键坐标",
+                            Toast.LENGTH_LONG
+                        ).show()
                         updateStatus("无坐标配置")
+                        val appInfo = SupportedApps.findByPackage(pkg) ?: SupportedApps.getDefault()
+                        FloatingCalibrationService.start(
+                            this@FloatingPlayerService, pkg, appInfo.keyCount, appInfo.layoutType, openTargetApp = true
+                        )
                     }
                     return@launch
                 }
@@ -901,10 +950,16 @@ class FloatingPlayerService : Service(), PerformanceScheduler.PlaybackStateListe
                 }
                 Log.d(TAG, "Foreground: $fgPkg")
 
-                // 6. 调度并开始演奏
+                // 6. 调度并开始演奏 — 优先使用标定方案的 layoutType
                 scheduler.setCoordinateManager(coordinateManager)
-                val lt = try { com.example.magicpinao.core.calibration.PianoLayoutType.valueOf(app.layoutType) } catch (e: Exception) { com.example.magicpinao.core.calibration.PianoLayoutType.LAYOUT_21 }
-                scheduler.schedule(sequence, pkg, app.baseNote, app.keyCount, app.whiteKeysOnly, lt)
+                val layoutTypeName = coordEntity.layoutType.ifBlank { app.layoutType }
+                val lt = try {
+                    com.example.magicpinao.core.calibration.PianoLayoutType.valueOf(layoutTypeName)
+                } catch (_: Exception) {
+                    com.example.magicpinao.core.calibration.PianoLayoutType.LAYOUT_21
+                }
+                val keyCount = coordEntity.keyCount.takeIf { it > 0 } ?: app.keyCount
+                scheduler.schedule(sequence, pkg, app.baseNote, keyCount, app.whiteKeysOnly, lt)
                 scheduler.start()
 
                 // 7. 更新状态
@@ -914,9 +969,10 @@ class FloatingPlayerService : Service(), PerformanceScheduler.PlaybackStateListe
                 currentPackageName = pkg
                 updatePlayPauseIcon()
                 startAnimation()
+                startProgressUpdater()
                 updateStatus("正在演奏: ${unified.title}")
 
-                Log.d(TAG, "=== Playback started: ${unified.title} ===")
+                Log.d(TAG, "=== Playback started: ${unified.title} layout=$lt keys=$keyCount ===")
 
             } catch (e: Exception) {
                 Log.e(TAG, "Playback error", e)
@@ -1059,38 +1115,125 @@ class FloatingPlayerService : Service(), PerformanceScheduler.PlaybackStateListe
     private fun handleDrag(event: MotionEvent): Boolean {
         return when (event.action) {
             MotionEvent.ACTION_DOWN -> {
-                val acc = PianoAccessibilityService.instance
-                if (acc != null) {
-                    val plp = acc.getPlayerLp()
-                    dragStartX = plp?.x ?: 0
-                    dragStartY = plp?.y ?: 0
-                } else {
-                    dragStartX = layoutParams?.x ?: 0
-                    dragStartY = layoutParams?.y ?: 0
-                }
+                dragStartX = layoutParams?.x ?: 0
+                dragStartY = layoutParams?.y ?: 0
                 dragStartTouchX = event.rawX
                 dragStartTouchY = event.rawY
                 true
             }
             MotionEvent.ACTION_MOVE -> {
-                val acc = PianoAccessibilityService.instance
-                if (acc != null) {
-                    acc.getPlayerLp()?.apply {
-                        x = dragStartX + (event.rawX - dragStartTouchX).toInt()
-                        y = dragStartY + (event.rawY - dragStartTouchY).toInt()
-                    }
-                    acc.updatePlayerFloatingView()
-                } else {
-                    layoutParams?.apply {
-                        x = dragStartX + (event.rawX - dragStartTouchX).toInt()
-                        y = dragStartY + (event.rawY - dragStartTouchY).toInt()
-                    }
-                    floatingView?.let { windowManager?.updateViewLayout(it, layoutParams) }
+                layoutParams?.apply {
+                    x = dragStartX + (event.rawX - dragStartTouchX).toInt()
+                    y = dragStartY + (event.rawY - dragStartTouchY).toInt()
                 }
+                floatingView?.let { windowManager?.updateViewLayout(it, layoutParams) }
                 true
             }
             MotionEvent.ACTION_UP -> true
             else -> false
+        }
+    }
+
+    private fun requestOverlayFocus(needFocus: Boolean) {
+        val lp = layoutParams ?: return
+        val view = floatingView ?: return
+        val flags = if (needFocus) {
+            (lp.flags and WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE.inv()) or
+                WindowManager.LayoutParams.FLAG_LAYOUT_NO_LIMITS or
+                WindowManager.LayoutParams.FLAG_HARDWARE_ACCELERATED
+        } else {
+            WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE or
+                WindowManager.LayoutParams.FLAG_LAYOUT_NO_LIMITS or
+                WindowManager.LayoutParams.FLAG_HARDWARE_ACCELERATED
+        }
+        if (lp.flags == flags) return
+        lp.flags = flags
+        try {
+            windowManager?.updateViewLayout(view, lp)
+        } catch (_: Exception) {
+        }
+    }
+
+    private fun ensureResizeHandle() {
+        val root = floatingView as? android.widget.FrameLayout ?: return
+        if (root.findViewWithTag<View>("resizeHandle") != null) return
+
+        val handle = TextView(this).apply {
+            tag = "resizeHandle"
+            text = "◢"
+            textSize = 14f
+            setTextColor(0x80FFFFFF.toInt())
+            setPadding(dpToPx(8), dpToPx(8), dpToPx(8), dpToPx(8))
+            gravity = Gravity.CENTER
+            layoutParams = android.widget.FrameLayout.LayoutParams(
+                dpToPx(36), dpToPx(36), Gravity.BOTTOM or Gravity.END
+            )
+            setOnTouchListener { _, event ->
+                when (event.action) {
+                    MotionEvent.ACTION_DOWN -> {
+                        resizeStartWidth = layoutParams?.width ?: panelWidthPx
+                        resizeStartX = event.rawX
+                        true
+                    }
+                    MotionEvent.ACTION_MOVE -> {
+                        val dm = resources.displayMetrics
+                        val minW = (220 * dm.density).toInt()
+                        val maxW = (dm.widthPixels * 0.9f).toInt()
+                        val newW = (resizeStartWidth + (event.rawX - resizeStartX).toInt())
+                            .coerceIn(minW, maxW)
+                        panelWidthPx = newW
+                        layoutParams?.width = newW
+                        floatingView?.findViewById<LinearLayout>(R.id.rootLayout)?.let { card ->
+                            card.layoutParams = card.layoutParams.apply { width = newW }
+                        }
+                        floatingView?.let { windowManager?.updateViewLayout(it, layoutParams) }
+                        true
+                    }
+                    else -> false
+                }
+            }
+        }
+        root.addView(handle)
+    }
+
+    private fun ensureCalibrateButton() {
+        val listBtn = floatingView?.findViewById<TextView>(R.id.btnMusicList) ?: return
+        val parent = listBtn.parent as? LinearLayout ?: return
+        if (parent.findViewWithTag<View>("btnCalibrate") != null) return
+
+        val btn = TextView(this).apply {
+            tag = "btnCalibrate"
+            text = "📍标定"
+            textSize = 11f
+            gravity = Gravity.CENTER
+            setTextColor(0xFF00CEC9.toInt())
+            setBackgroundResource(R.drawable.btn_speed_bg)
+            layoutParams = LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.MATCH_PARENT, 1f).apply {
+                marginStart = dpToPx(4)
+            }
+            setOnClickListener {
+                val pkg = currentPackageName.ifBlank { targetPackage ?: "" }
+                if (pkg.isBlank()) {
+                    Toast.makeText(this@FloatingPlayerService, "未设置目标应用", Toast.LENGTH_SHORT).show()
+                    return@setOnClickListener
+                }
+                stopPlayback()
+                val app = SupportedApps.findByPackage(pkg) ?: SupportedApps.getDefault()
+                FloatingCalibrationService.start(
+                    this@FloatingPlayerService, pkg, app.keyCount, app.layoutType, openTargetApp = true
+                )
+                Toast.makeText(this@FloatingPlayerService, "进入坐标标定", Toast.LENGTH_SHORT).show()
+            }
+        }
+        // 插在列表按钮后面
+        val idx = parent.indexOfChild(listBtn)
+        parent.addView(btn, idx + 1)
+        // 重新平衡权重：上一首 / 列表 / 标定 / 下一首
+        for (i in 0 until parent.childCount) {
+            val child = parent.getChildAt(i)
+            val lp = child.layoutParams as? LinearLayout.LayoutParams ?: continue
+            lp.weight = 1f
+            child.layoutParams = lp
         }
     }
 
@@ -1106,27 +1249,21 @@ class FloatingPlayerService : Service(), PerformanceScheduler.PlaybackStateListe
             child.visibility = if (isCollapsed) View.GONE else View.VISIBLE
         }
         floatingView?.findViewById<TextView>(R.id.btnCollapse)?.text = if (isCollapsed) "□" else "—"
-        val acc = PianoAccessibilityService.instance
-        if (acc != null) {
-            acc.updatePlayerFloatingView()
-        } else {
-            floatingView?.let { windowManager?.updateViewLayout(it, layoutParams) }
-        }
+        floatingView?.findViewWithTag<View>("resizeHandle")?.visibility =
+            if (isCollapsed) View.GONE else View.VISIBLE
+        floatingView?.let { windowManager?.updateViewLayout(it, layoutParams) }
     }
 
     // ==================== 清理 ====================
 
     private fun removeFloatingView() {
-        val acc = PianoAccessibilityService.instance
-        if (acc != null) {
-            acc.hidePlayerFloatingView()
-        } else {
-            try {
-                floatingView?.let { windowManager?.removeView(it) }
-            } catch (e: Exception) {
-                Log.e(TAG, "Error removing floating view", e)
-            }
+        try {
+            floatingView?.let { windowManager?.removeView(it) }
+        } catch (e: Exception) {
+            Log.e(TAG, "Error removing floating view", e)
         }
+        // 兼容旧逻辑：同时清理无障碍服务侧残留
+        PianoAccessibilityService.instance?.hidePlayerFloatingView()
         floatingView = null
     }
 
