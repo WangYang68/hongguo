@@ -18,21 +18,21 @@ object SupportedApps {
             packageName = "com.miHoYo.GenshinImpact",
             appName = "原神",
             keyCount = 21, baseNote = 48,
-            description = "风物之诗琴 · 21键C调", whiteKeysOnly = true, rowCount = 3,
+            description = "游戏内风物之诗琴 · 21键", whiteKeysOnly = true, rowCount = 3,
             layoutType = "LAYOUT_21"
         ),
         TargetApp(
             packageName = "com.sky.xlzq",
             appName = "光遇",
             keyCount = 15, baseNote = 60,
-            description = "15键 · 无低音区", whiteKeysOnly = true, rowCount = 3,
+            description = "15键 · 选择后将弹出悬浮标定", whiteKeysOnly = true, rowCount = 3,
             layoutType = "LAYOUT_15"
         ),
         TargetApp(
             packageName = "com.PA.GenshinPiano",
             appName = "原神钢琴",
             keyCount = 21, baseNote = 48,
-            description = "风物之诗琴 · 21键C调", whiteKeysOnly = true, rowCount = 3,
+            description = "独立App「Genshin Piano」· 请选这个", whiteKeysOnly = true, rowCount = 3,
             layoutType = "LAYOUT_21"
         ),
         TargetApp(

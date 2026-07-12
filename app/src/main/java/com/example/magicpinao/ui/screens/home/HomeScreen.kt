@@ -75,22 +75,10 @@ fun HomeScreen(
 
     val tags = remember { listOf("全部", "流行", "古典", "动漫", "游戏", "钢琴", "爵士") }
 
+    // 进入主页时强制检查无障碍 + 悬浮窗（写入 ViewModel，由下方 Dialog 显示）
     LaunchedEffect(Unit) {
-        if (!viewModel.checkAccessibilityPermission()) {
-            showPermissionDialog = true
-            permissionDialogType = PermissionType.ACCESSIBILITY
-        }
-        // 加载云端音乐
         viewModel.loadCloudMusic()
-    }
-
-    LaunchedEffect(showPermissionDialog) {
-        if (!showPermissionDialog && pendingCalibrationPackage != null) {
-            if (viewModel.checkOverlayPermission()) {
-                onCalibrationClick()
-                pendingCalibrationPackage = null
-            }
-        }
+        viewModel.ensurePlayPermissions()
     }
 
     // VIP到期对话框
@@ -441,8 +429,22 @@ fun HomeScreen(
             )
         }
 
-        // 权限对话框
-        if (showPermissionDialog) {
+        // 权限对话框（必须使用 ViewModel 状态，否则播放/标定时的权限请求不会显示）
+        if (uiState.showPermissionDialog) {
+            PermissionDialog(
+                permissionType = uiState.permissionType,
+                onDismiss = { viewModel.dismissPermissionDialog() },
+                onOpenSettings = {
+                    when (uiState.permissionType) {
+                        PermissionType.ACCESSIBILITY -> viewModel.openAccessibilitySettings()
+                        PermissionType.OVERLAY -> viewModel.openOverlaySettings()
+                        else -> {}
+                    }
+                    viewModel.dismissPermissionDialog()
+                }
+            )
+        } else if (showPermissionDialog) {
+            // 兼容旧本地状态
             PermissionDialog(
                 permissionType = permissionDialogType,
                 onDismiss = { showPermissionDialog = false },
@@ -1007,9 +1009,14 @@ private fun AppSelectorDialog(
 ) {
     AlertDialog(
         onDismissRequest = onDismiss,
-        title = { Text("选择目标钢琴应用", color = TextPrimary) },
+        title = { Text("选择目标钢琴应用（将启动悬浮标定）", color = TextPrimary) },
         text = {
             Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                Text(
+                    "使用独立「Genshin Piano」请选「原神钢琴」。选中后会自动弹出标定悬浮窗。",
+                    color = TextHint,
+                    style = MaterialTheme.typography.bodySmall
+                )
                 apps.forEach { app ->
                     Surface(
                         onClick = { onAppSelected(app) },
@@ -1021,10 +1028,10 @@ private fun AppSelectorDialog(
                             Box(modifier = Modifier.size(40.dp).clip(CircleShape).background(Brush.linearGradient(listOf(PrimaryPurple, SecondaryCyan))), contentAlignment = Alignment.Center) {
                                 Text("🎵", fontSize = 20.sp)
                             }
-                            Column {
+                            Column(modifier = Modifier.weight(1f)) {
                                 Text(app.appName, style = MaterialTheme.typography.titleSmall, color = TextPrimary, fontWeight = FontWeight.Bold)
                                 Text(app.description, style = MaterialTheme.typography.bodySmall, color = TextHint)
-                                Text("${app.keyCount} 键", style = MaterialTheme.typography.labelSmall, color = TextSecondary)
+                                Text("${app.keyCount} 键 · 点击开始标定", style = MaterialTheme.typography.labelSmall, color = SecondaryCyan)
                             }
                         }
                     }
@@ -1041,8 +1048,14 @@ private fun AppSelectorDialog(
 @Composable
 private fun PermissionDialog(permissionType: PermissionType, onDismiss: () -> Unit, onOpenSettings: () -> Unit) {
     val (title, message) = when (permissionType) {
-        PermissionType.ACCESSIBILITY -> Pair("需要无障碍服务权限", "Magic Piano 需要无障碍服务权限来自动演奏钢琴。\n\n请在设置中开启「Magic Piano」的无障碍服务。")
-        PermissionType.OVERLAY -> Pair("需要悬浮窗权限", "Magic Piano 需要悬浮窗权限来进行琴键坐标标定。\n\n请在设置中允许「Magic Piano」显示在其他应用上层。")
+        PermissionType.ACCESSIBILITY -> Pair(
+            "需要开启无障碍服务",
+            "Magic Piano 必须开启无障碍服务才能模拟点击琴键。\n\n请点击「去设置」→ 找到「Magic Piano」→ 打开开关。\n若已开启但仍提示，请先关闭再重新打开一次。"
+        )
+        PermissionType.OVERLAY -> Pair(
+            "需要悬浮窗权限",
+            "Magic Piano 需要悬浮窗权限，才能在「Genshin Piano / 原神 / 光遇」上层显示标定与播放控件。\n\n请点击「去设置」并允许「显示在其他应用上层」。\n\n若使用 MuMu 模拟器，还需关闭「应用后台保活」后重启模拟器。"
+        )
         else -> Pair("需要权限", "请授予相关权限以使用完整功能。")
     }
 

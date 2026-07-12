@@ -149,9 +149,21 @@ class FloatingCalibrationService : Service() {
                 totalKeys = pianoLayout.keyCount
                 openTargetOnStart = intent.getBooleanExtra(EXTRA_OPEN_TARGET, true)
                 startForegroundNotification()
+                // 先显示触发按钮，再打开目标 App，并在切换后再次刷新悬浮窗
                 showTriggerButton()
                 if (openTargetOnStart && currentAppPackage.isNotBlank()) {
                     openTargetApp(currentAppPackage)
+                    scope.launch {
+                        delay(1200)
+                        // 切到目标 App 后重新挂载，避免悬浮窗被系统/模拟器吃掉
+                        if (phase == Phase.TRIGGER) {
+                            showTriggerButton()
+                            // 同时用无障碍 Overlay 再挂一份（部分模拟器只有这层能盖住游戏）
+                            mirrorTriggerViaAccessibility()
+                        }
+                    }
+                } else {
+                    mirrorTriggerViaAccessibility()
                 }
             }
             ACTION_STOP_CALIBRATION -> {
@@ -230,9 +242,26 @@ class FloatingCalibrationService : Service() {
         createTriggerButton()
         Toast.makeText(
             this,
-            "请打开「${getAppName()}」钢琴界面，点击悬浮按钮开始标定",
+            "请进入「${getAppName()}」钢琴界面，点击紫色「开始标定」按钮",
             Toast.LENGTH_LONG
         ).show()
+    }
+
+    /** 无障碍 Overlay 镜像触发按钮（提高跨应用可见性） */
+    private fun mirrorTriggerViaAccessibility() {
+        val acc = PianoAccessibilityService.instance ?: return
+        try {
+            acc.setTargetPackageForOverlay(currentAppPackage)
+            acc.showCalibrationTrigger(layoutType.label, totalKeys) {
+                phase = Phase.CALIBRATE
+                removeTriggerButton()
+                acc.hideCalibrationTrigger()
+                showCalibrationUI()
+            }
+            Log.d(TAG, "Mirrored trigger via accessibility overlay")
+        } catch (e: Exception) {
+            Log.w(TAG, "mirrorTriggerViaAccessibility failed", e)
+        }
     }
 
     private fun createTriggerButton() {
@@ -280,8 +309,9 @@ class FloatingCalibrationService : Service() {
             format = PixelFormat.TRANSLUCENT
             width = WindowManager.LayoutParams.WRAP_CONTENT
             height = WindowManager.LayoutParams.WRAP_CONTENT
-            gravity = Gravity.TOP or Gravity.CENTER_HORIZONTAL
-            y = (120 * density).toInt()
+            gravity = Gravity.CENTER
+            x = 0
+            y = 0
         }
 
         var isDrag = false
@@ -355,6 +385,21 @@ class FloatingCalibrationService : Service() {
         initDefaultMarkers()
         createOverlayView()
         createControlPanel()
+        // 同步一份到无障碍 Overlay（游戏上层更稳）
+        val acc = PianoAccessibilityService.instance
+        if (acc != null) {
+            try {
+                acc.showCalibrationOverlay(markers.toList(), layoutType.label) { updated ->
+                    markers.clear()
+                    markers.addAll(updated)
+                    overlayView?.setMarkers(markers.toList())
+                    updatePanelText()
+                }
+                // 控制面板优先用我们自己的 APPLICATION_OVERLAY；无障碍侧只补覆盖层
+            } catch (e: Exception) {
+                Log.w(TAG, "acc overlay failed", e)
+            }
+        }
     }
 
     private fun createOverlayView() {

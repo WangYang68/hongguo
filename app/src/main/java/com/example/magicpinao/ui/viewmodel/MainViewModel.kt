@@ -365,9 +365,9 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                 if (coordEntity == null || !coordinateRepository.isCoordinateEntityValid(coordEntity)) {
                     _uiState.value = _uiState.value.copy(
                         errorMessage = "请先为「${SupportedApps.findByPackage(packageName)?.appName ?: packageName}」标定琴键坐标",
-                        showCalibrationPrompt = true,
                         calibratingAppPackage = packageName
                     )
+                    startCalibration(packageName)
                     return@launch
                 }
 
@@ -501,27 +501,26 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         _uiState.value = _uiState.value.copy(
             selectedAppPackage = packageName,
             showAppSelector = false,
-            showCalibrationPrompt = false
+            showCalibrationPrompt = false,
+            calibratingAppPackage = packageName
         )
         refreshCoordinateStatus(packageName)
 
         val pending = _uiState.value.pendingMusicId
-        if (!pending.isNullOrBlank()) {
-            _uiState.value = _uiState.value.copy(pendingMusicId = null)
-            if (!pending.startsWith("cloud_")) {
-                playMusic(pending, packageName)
-            }
-        } else {
+        if (!pending.isNullOrBlank() && !pending.startsWith("cloud_")) {
+            // 有待播音乐：先检查坐标，没有则直接进悬浮标定
             viewModelScope.launch {
                 val has = coordinateRepository.hasCoordinateForPackage(packageName)
-                if (!has) {
-                    _uiState.value = _uiState.value.copy(
-                        showCalibrationPrompt = true,
-                        calibratingAppPackage = packageName,
-                        errorMessage = "「${SupportedApps.findByPackage(packageName)?.appName}」尚未标定坐标，请先标定"
-                    )
+                if (has) {
+                    _uiState.value = _uiState.value.copy(pendingMusicId = null)
+                    playMusic(pending, packageName)
+                } else {
+                    startCalibration(packageName)
                 }
             }
+        } else {
+            // 选择游戏 = 进入该游戏的悬浮坐标标定（可重新标定）
+            startCalibration(packageName)
         }
     }
 
@@ -535,12 +534,29 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         _uiState.value = _uiState.value.copy(showCalibrationPrompt = false)
     }
 
+    fun dismissPermissionDialog() {
+        _uiState.value = _uiState.value.copy(
+            showPermissionDialog = false,
+            permissionType = PermissionType.NONE
+        )
+    }
+
     fun checkAccessibilityPermission(): Boolean = permissionManager.isAccessibilityServiceEnabled()
+
+    /** 无障碍已开启且服务进程已连接 */
+    fun isAccessibilityServiceReady(): Boolean {
+        return permissionManager.isAccessibilityServiceEnabled() &&
+            com.example.magicpinao.core.accessibility.PianoAccessibilityService.instance != null
+    }
+
     fun openAccessibilitySettings() = permissionManager.openAccessibilitySettings()
     fun openOverlaySettings() = permissionManager.openOverlaySettings()
     fun checkOverlayPermission(): Boolean = permissionManager.hasOverlayPermission()
 
-    private fun ensurePlayPermissions(): Boolean {
+    /**
+     * 检查演奏/标定所需权限。失败时写入 uiState.showPermissionDialog 供界面弹出。
+     */
+    fun ensurePlayPermissions(): Boolean {
         if (!permissionManager.hasOverlayPermission()) {
             _uiState.value = _uiState.value.copy(
                 showPermissionDialog = true,
@@ -552,6 +568,14 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
             _uiState.value = _uiState.value.copy(
                 showPermissionDialog = true,
                 permissionType = PermissionType.ACCESSIBILITY
+            )
+            return false
+        }
+        if (com.example.magicpinao.core.accessibility.PianoAccessibilityService.instance == null) {
+            _uiState.value = _uiState.value.copy(
+                showPermissionDialog = true,
+                permissionType = PermissionType.ACCESSIBILITY,
+                errorMessage = "无障碍服务未连接，请在系统设置中关闭再重新开启「Magic Piano」"
             )
             return false
         }
@@ -588,18 +612,19 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
             _uiState.value.selectedAppPackage ?: return
         }
         val appInfo = SupportedApps.findByPackage(pkg) ?: SupportedApps.getDefault()
-        if (!permissionManager.hasOverlayPermission()) {
-            _uiState.value = _uiState.value.copy(showPermissionDialog = true, permissionType = PermissionType.OVERLAY)
-            return
-        }
-        if (!permissionManager.isAccessibilityServiceEnabled()) {
-            _uiState.value = _uiState.value.copy(showPermissionDialog = true, permissionType = PermissionType.ACCESSIBILITY)
+        // 权限不足时弹窗，不要静默返回
+        if (!ensurePlayPermissions()) {
+            _uiState.value = _uiState.value.copy(
+                calibratingAppPackage = pkg,
+                isCalibrating = false
+            )
             return
         }
         _uiState.value = _uiState.value.copy(
             isCalibrating = true,
             calibratingAppPackage = pkg,
-            showCalibrationPrompt = false
+            showCalibrationPrompt = false,
+            selectedAppPackage = pkg
         )
         com.example.magicpinao.core.accessibility.FloatingPlayerService.stop(getApplication())
         performanceScheduler.stop()
@@ -617,7 +642,10 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     private fun playMusic(musicId: String, packageName: String) {
         viewModelScope.launch {
             try {
-                if (!ensurePlayPermissions()) return@launch
+                if (!ensurePlayPermissions()) {
+                    _uiState.value = _uiState.value.copy(pendingMusicId = musicId)
+                    return@launch
+                }
 
                 val music = musicRepository.getMusicById(musicId) ?: run {
                     _uiState.value = _uiState.value.copy(errorMessage = "音乐未找到")
@@ -626,12 +654,13 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
 
                 val coordEntity = coordinateRepository.getCoordinateByPackage(packageName)
                 if (coordEntity == null || !coordinateRepository.isCoordinateEntityValid(coordEntity)) {
+                    // 无有效坐标 → 直接启动悬浮标定（不再只弹文字对话框）
                     _uiState.value = _uiState.value.copy(
-                        errorMessage = "请先为「${SupportedApps.findByPackage(packageName)?.appName ?: packageName}」标定琴键坐标",
-                        showCalibrationPrompt = true,
+                        pendingMusicId = musicId,
                         calibratingAppPackage = packageName,
-                        pendingMusicId = musicId
+                        errorMessage = "请先标定「${SupportedApps.findByPackage(packageName)?.appName ?: packageName}」琴键坐标"
                     )
+                    startCalibration(packageName)
                     return@launch
                 }
 

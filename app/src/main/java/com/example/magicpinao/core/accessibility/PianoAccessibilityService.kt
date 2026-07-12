@@ -295,22 +295,19 @@ class PianoAccessibilityService : AccessibilityService() {
                 text = "$layoutLabel | ${totalKeys}键"; textSize = 11f
                 setTextColor(0xFFA29BFE.toInt()); gravity = android.view.Gravity.CENTER
             })
-
-            setOnClickListener {
-                hideCalibrationTrigger()
-                onClick()
-            }
         }
 
         val lp = android.view.WindowManager.LayoutParams().apply {
             type = android.view.WindowManager.LayoutParams.TYPE_ACCESSIBILITY_OVERLAY
             flags = android.view.WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE or
-                    android.view.WindowManager.LayoutParams.FLAG_NOT_TOUCH_MODAL
+                    android.view.WindowManager.LayoutParams.FLAG_LAYOUT_NO_LIMITS or
+                    android.view.WindowManager.LayoutParams.FLAG_HARDWARE_ACCELERATED
             format = android.graphics.PixelFormat.TRANSLUCENT
             width = android.view.WindowManager.LayoutParams.WRAP_CONTENT
             height = android.view.WindowManager.LayoutParams.WRAP_CONTENT
-            gravity = android.view.Gravity.TOP or android.view.Gravity.CENTER_HORIZONTAL
-            y = (120 * density).toInt()
+            gravity = android.view.Gravity.CENTER
+            x = 0
+            y = 0
         }
 
         var isDrag = false
@@ -320,18 +317,31 @@ class PianoAccessibilityService : AccessibilityService() {
             when (event.action) {
                 android.view.MotionEvent.ACTION_DOWN -> {
                     sx = event.rawX; sy = event.rawY
-                    wx = lp.x; wy = lp.y; isDrag = false; false
+                    wx = lp.x; wy = lp.y; isDrag = false
+                    true
                 }
                 android.view.MotionEvent.ACTION_MOVE -> {
                     val dx = (event.rawX - sx).toInt()
                     val dy = (event.rawY - sy).toInt()
-                    if (!isDrag && (kotlin.math.abs(dx) > 10 || kotlin.math.abs(dy) > 10)) isDrag = true
+                    if (!isDrag && (kotlin.math.abs(dx) > 12 || kotlin.math.abs(dy) > 12)) isDrag = true
                     if (isDrag) { lp.x = wx + dx; lp.y = wy + dy; wm.updateViewLayout(card, lp) }
                     true
                 }
-                else -> { isDrag = false; false }
+                android.view.MotionEvent.ACTION_UP -> {
+                    if (!isDrag) {
+                        hideCalibrationTrigger()
+                        onClick()
+                    }
+                    isDrag = false
+                    true
+                }
+                else -> false
             }
         }
+
+        // 点击由 ACTION_UP 处理
+        card.isClickable = true
+        card.isFocusable = true
 
         calTriggerView = card
             wm.addView(card, lp)
