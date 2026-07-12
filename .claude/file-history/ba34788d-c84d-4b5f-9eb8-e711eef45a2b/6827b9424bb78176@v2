@@ -1,0 +1,78 @@
+"""
+FFmpegWorker — 后台 FFmpeg 子进程线程
+携带进度解析和取消支持
+【开发状态：已完成】
+"""
+
+import subprocess
+import sys
+import threading
+
+from PyQt6.QtCore import pyqtSignal
+
+from app.workers.base import BaseWorker
+from app.ffmpeg.progress_parser import parse_stderr_line, parse_progress_line
+
+
+class FFmpegWorker(BaseWorker):
+    """运行 FFmpeg 命令并解析进度"""
+
+    detail_progress = pyqtSignal(float, float)  # current_sec, total_sec
+    log_line = pyqtSignal(str)
+
+    def __init__(self, command: list[str], duration_sec: float = 0.0, parent=None):
+        super().__init__(parent)
+        self.command = command
+        self.duration_sec = duration_sec or 1.0
+        self._process: subprocess.Popen | None = None
+
+    def run(self):
+        self.started.emit()
+        self.message.emit("FFmpeg 处理中...")
+
+        try:
+            self._process = subprocess.Popen(
+                self.command,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                text=True,
+                creationflags=subprocess.CREATE_NO_WINDOW if sys.platform == "win32" else 0,
+                bufsize=1,
+            )
+        except FileNotFoundError:
+            self.error.emit("FFmpeg 未找到，请确认已安装 FFmpeg")
+            return
+
+        # 从 stderr 读取进度（FFmpeg 输出进度到 stderr）
+        state_buf: dict = {}
+        try:
+            for line in iter(self._process.stderr.readline, ""):
+                if self._cancelled:
+                    self._process.terminate()
+                    self._process.wait(timeout=5)
+                    self.message.emit("已取消")
+                    return
+
+                self.log_line.emit(line.rstrip())
+
+                # 先尝试 -progress pipe:1 输出解析
+                parsed = parse_stderr_line(line)
+                if parsed:
+                    pct = min(int(parsed.time_sec / self.duration_sec * 100), 99)
+                    self.progress.emit(pct)
+                    self.detail_progress.emit(parsed.time_sec, self.duration_sec)
+        except Exception:
+            pass
+
+        self._process.wait(timeout=60)
+        if self._process.returncode == 0:
+            self.progress.emit(100)
+            self.message.emit("FFmpeg 处理完成")
+            self.finished.emit()
+        else:
+            self.error.emit(f"FFmpeg 退出码: {self._process.returncode}")
+
+    def cancel(self):
+        super().cancel()
+        if self._process and self._process.poll() is None:
+            self._process.terminate()

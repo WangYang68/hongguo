@@ -1,0 +1,273 @@
+package com.example.magicpinao.ui.screens.calibration
+
+import android.widget.Toast
+import androidx.compose.foundation.background
+import androidx.compose.foundation.clickable
+import androidx.compose.foundation.layout.*
+import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.automirrored.filled.ArrowBack
+import androidx.compose.material3.*
+import androidx.compose.runtime.*
+import androidx.compose.ui.Alignment
+import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clip
+import androidx.compose.ui.graphics.Brush
+import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.style.TextAlign
+import androidx.compose.ui.unit.dp
+import androidx.compose.ui.unit.sp
+import com.example.magicpinao.core.accessibility.FloatingCalibrationService
+import com.example.magicpinao.core.accessibility.SupportedApps
+import com.example.magicpinao.core.accessibility.TargetApp
+import com.example.magicpinao.core.calibration.PianoLayoutType
+import com.example.magicpinao.core.data.AppDatabase
+import com.example.magicpinao.core.data.CoordinateEntity
+import com.example.magicpinao.ui.theme.*
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
+import java.text.SimpleDateFormat
+import java.util.*
+
+/**
+ * 坐标标定界面 — 支持多布局选择
+ */
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable
+fun CalibrationScreen(
+    onBackClick: () -> Unit
+) {
+    val context = LocalContext.current
+    var selectedApp by remember { mutableStateOf<TargetApp?>(null) }
+    var selectedLayout by remember { mutableStateOf(PianoLayoutType.LAYOUT_21) }
+    var calibrationStep by remember { mutableStateOf(0) }
+    var schemesMap by remember { mutableStateOf<Map<String, List<CoordinateEntity>>>(emptyMap()) }
+
+    // 加载已保存的标定方案
+    LaunchedEffect(Unit) {
+        withContext(Dispatchers.IO) {
+            val repo = com.example.magicpinao.core.data.CoordinateRepository(context)
+            val map = mutableMapOf<String, List<CoordinateEntity>>()
+            SupportedApps.apps.forEach { app ->
+                val schemes = repo.getSchemesForPackage(app.packageName)
+                if (schemes.isNotEmpty()) map[app.packageName] = schemes
+            }
+            schemesMap = map
+        }
+    }
+
+    Box(
+        modifier = Modifier
+            .fillMaxSize()
+            .background(BackgroundDark)
+    ) {
+        Column(modifier = Modifier.fillMaxSize()) {
+            // 顶部栏
+            TopAppBar(
+                title = {
+                    Text("标定琴键坐标", color = TextPrimary, fontWeight = FontWeight.Bold)
+                },
+                navigationIcon = {
+                    IconButton(onClick = onBackClick) {
+                        Icon(Icons.AutoMirrored.Filled.ArrowBack, "返回", tint = TextPrimary)
+                    }
+                },
+                colors = TopAppBarDefaults.topAppBarColors(containerColor = SurfaceDark)
+            )
+
+            if (selectedApp == null) {
+                // 步骤1：选择应用
+                AppSelectionView(
+                    selectedLayout = selectedLayout,
+                    schemesMap = schemesMap,
+                    onLayoutChange = { selectedLayout = it },
+                    onSelectApp = { app ->
+                        selectedApp = app
+                        calibrationStep = 1
+                    }
+                )
+            } else {
+                // 步骤2：开始标定
+                CalibrationGuideView(
+                    app = selectedApp!!,
+                    layout = selectedLayout,
+                    onStartCalibration = {
+                        FloatingCalibrationService.start(
+                            context,
+                            selectedApp!!.packageName,
+                            when (selectedLayout) {
+                                PianoLayoutType.LAYOUT_21 -> 21
+                                PianoLayoutType.LAYOUT_36 -> 36
+                                PianoLayoutType.LAYOUT_15 -> 15
+                            },
+                            selectedLayout.name
+                        )
+                        Toast.makeText(context, "标定已启动！拖动标记到对应琴键上", Toast.LENGTH_LONG).show()
+                        onBackClick()
+                    },
+                    onBack = {
+                        selectedApp = null
+                        calibrationStep = 0
+                    }
+                )
+            }
+        }
+    }
+}
+
+@Composable
+private fun AppSelectionView(
+    selectedLayout: PianoLayoutType,
+    schemesMap: Map<String, List<CoordinateEntity>> = emptyMap(),
+    onLayoutChange: (PianoLayoutType) -> Unit,
+    onSelectApp: (TargetApp) -> Unit
+) {
+    Column(
+        modifier = Modifier.fillMaxSize().padding(16.dp),
+        horizontalAlignment = Alignment.CenterHorizontally
+    ) {
+        Text("选择钢琴布局", style = MaterialTheme.typography.headlineSmall, color = TextPrimary, fontWeight = FontWeight.Bold)
+        Spacer(modifier = Modifier.height(4.dp))
+        Text("根据目标应用的琴键类型选择", style = MaterialTheme.typography.bodyMedium, color = TextHint)
+        Spacer(modifier = Modifier.height(20.dp))
+
+        // 布局选择卡片
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.spacedBy(8.dp)
+        ) {
+            PianoLayoutType.entries.forEach { layout ->
+                val isSelected = layout == selectedLayout
+                Card(
+                    modifier = Modifier.weight(1f).clickable { onLayoutChange(layout) },
+                    shape = RoundedCornerShape(12.dp),
+                    colors = CardDefaults.cardColors(
+                        containerColor = if (isSelected) PrimaryPurple else SurfaceDark
+                    ),
+                    border = if (isSelected) androidx.compose.foundation.BorderStroke(2.dp, PrimaryPurpleLight) else null
+                ) {
+                    Column(
+                        modifier = Modifier.padding(12.dp),
+                        horizontalAlignment = Alignment.CenterHorizontally
+                    ) {
+                        Text(
+                            when (layout) {
+                                PianoLayoutType.LAYOUT_21 -> "21键"
+                                PianoLayoutType.LAYOUT_36 -> "36键"
+                                PianoLayoutType.LAYOUT_15 -> "15键"
+                            },
+                            style = MaterialTheme.typography.titleMedium,
+                            color = if (isSelected) Color.White else TextPrimary,
+                            fontWeight = FontWeight.Bold
+                        )
+                        Text(
+                            layout.label,
+                            style = MaterialTheme.typography.labelSmall,
+                            color = if (isSelected) Color.White.copy(alpha = 0.8f) else TextHint
+                        )
+                    }
+                }
+            }
+        }
+
+        Spacer(modifier = Modifier.height(24.dp))
+        Text("选择目标应用", style = MaterialTheme.typography.titleLarge, color = TextPrimary, fontWeight = FontWeight.Bold)
+        Spacer(modifier = Modifier.height(12.dp))
+
+        // 应用列表
+        SupportedApps.apps.forEach { app ->
+            Card(
+                modifier = Modifier.fillMaxWidth().padding(vertical = 6.dp).clickable { onSelectApp(app) },
+                shape = RoundedCornerShape(12.dp),
+                colors = CardDefaults.cardColors(containerColor = SurfaceDark),
+                elevation = CardDefaults.cardElevation(defaultElevation = 2.dp)
+            ) {
+                Row(
+                    modifier = Modifier.padding(14.dp).fillMaxWidth(),
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Box(
+                        modifier = Modifier.size(48.dp).clip(RoundedCornerShape(10.dp))
+                            .background(Brush.linearGradient(listOf(PrimaryPurple, SecondaryCyan))),
+                        contentAlignment = Alignment.Center
+                    ) { Text("🎹", fontSize = 22.sp) }
+                    Spacer(modifier = Modifier.width(12.dp))
+                    Column(modifier = Modifier.weight(1f)) {
+                        Text(app.appName, style = MaterialTheme.typography.titleSmall, color = TextPrimary, fontWeight = FontWeight.Bold)
+                        Text("${app.keyCount}键 · ${app.description}", style = MaterialTheme.typography.bodySmall, color = TextHint)
+                        val count = schemesMap[app.packageName]?.size ?: 0
+                        Text(
+                            if (count > 0) "已保存 $count 个方案 · 布局: ${app.layoutType}" else "布局: ${app.layoutType}",
+                            style = MaterialTheme.typography.labelSmall,
+                            color = if (count > 0) SuccessGreen else PrimaryPurpleLight
+                        )
+                    }
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun CalibrationGuideView(
+    app: TargetApp,
+    layout: PianoLayoutType,
+    onStartCalibration: () -> Unit,
+    onBack: () -> Unit
+) {
+    Column(
+        modifier = Modifier.fillMaxSize().padding(16.dp),
+        horizontalAlignment = Alignment.CenterHorizontally,
+        verticalArrangement = Arrangement.Center
+    ) {
+        Text("🎹", fontSize = 64.sp)
+        Spacer(modifier = Modifier.height(16.dp))
+        Text(
+            "标定 ${app.appName}",
+            style = MaterialTheme.typography.headlineSmall,
+            color = TextPrimary, fontWeight = FontWeight.Bold
+        )
+        Text(
+            "${layout.label} · ${app.keyCount}键",
+            style = MaterialTheme.typography.bodyLarge,
+            color = PrimaryPurpleLight
+        )
+        Spacer(modifier = Modifier.height(24.dp))
+
+        // 说明
+        Card(
+            modifier = Modifier.fillMaxWidth(),
+            shape = RoundedCornerShape(12.dp),
+            colors = CardDefaults.cardColors(containerColor = SurfaceDark)
+        ) {
+            Column(modifier = Modifier.padding(16.dp)) {
+                Text("操作说明", style = MaterialTheme.typography.titleSmall, color = PrimaryPurpleLight, fontWeight = FontWeight.Bold)
+                Spacer(modifier = Modifier.height(8.dp))
+                Text("1. 打开${app.appName}并进入钢琴界面", color = TextSecondary, style = MaterialTheme.typography.bodyMedium)
+                Text("2. 拖动彩色标记到对应的琴键位置", color = TextSecondary, style = MaterialTheme.typography.bodyMedium)
+                Text("3. 每个标记上显示了对应音符名", color = TextSecondary, style = MaterialTheme.typography.bodyMedium)
+                Text("4. 调整完成后点击「完成」保存", color = TextSecondary, style = MaterialTheme.typography.bodyMedium)
+            }
+        }
+
+        Spacer(modifier = Modifier.height(32.dp))
+
+        Button(
+            onClick = onStartCalibration,
+            modifier = Modifier.fillMaxWidth().height(56.dp),
+            shape = RoundedCornerShape(14.dp),
+            colors = ButtonDefaults.buttonColors(containerColor = PrimaryPurple)
+        ) {
+            Text("开始标定", style = MaterialTheme.typography.titleMedium, color = Color.White, fontWeight = FontWeight.Bold)
+        }
+
+        Spacer(modifier = Modifier.height(12.dp))
+
+        TextButton(onClick = onBack) {
+            Text("返回重新选择", color = TextHint)
+        }
+    }
+}

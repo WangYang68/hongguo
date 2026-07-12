@@ -1,0 +1,99 @@
+"""
+MagicVideo — 基于 Python + FFmpeg 的视频剪辑工具（鬼畜风格）
+入口文件
+【开发状态：已完成】
+"""
+
+import sys
+import os
+
+# 确保能从 magicvideo/ 运行
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+
+from PyQt6.QtWidgets import QApplication
+from PyQt6.QtCore import Qt
+
+from app.theme import apply_theme, COLORS
+from app.main_window import MainWindow
+from app.utils.temp_manager import TempFileManager
+from app.utils.system_check import check_ffmpeg
+
+# 导入所有真实标签页
+from app.tabs.download_tab import DownloadTab
+from app.tabs.edit_tab import EditTab
+from app.tabs.effects_tab import EffectsTab
+from app.tabs.export_tab import ExportTab
+
+
+def main():
+    # 高 DPI 支持（PyQt6 6.8+ 默认启用，仅保留兼容旧版）
+
+    app = QApplication(sys.argv)
+    app.setApplicationName("MagicVideo")
+    app.setOrganizationName("SaveAny")
+
+    # 应用暗色主题
+    apply_theme(app)
+
+    # 检查 FFmpeg
+    ffmpeg_status = check_ffmpeg()
+    if not ffmpeg_status["ok"]:
+        from PyQt6.QtWidgets import QMessageBox
+        QMessageBox.warning(
+            None, "环境警告",
+            f"FFmpeg 检测失败:\n{ffmpeg_status['message']}\n\n"
+            "部分功能可能无法使用。请安装 FFmpeg 并添加到 PATH。"
+        )
+
+    # 临时文件管理器
+    temp_manager = TempFileManager()
+
+    # ---- 创建主窗口 ----
+    window = MainWindow()
+
+    # ---- 创建所有标签页 ----
+    download_tab = DownloadTab()
+    edit_tab = EditTab()
+    effects_tab = EffectsTab()
+    export_tab = ExportTab()
+
+    # ---- 注册标签页（替换占位页） ----
+    window.set_tab_widget(0, download_tab)
+    window.set_tab_widget(1, edit_tab)
+    window.set_tab_widget(2, effects_tab)
+    window.set_tab_widget(3, export_tab)
+
+    # ---- 跨标签页联动 ----
+    # 下载完成 → 编辑标签页加载视频 + 自动切到编辑标签页
+    def on_download_play(filepath):
+        edit_tab.load_source(filepath)
+        window._switch_tab(1)  # 切换到编辑标签页
+    download_tab.download_requested.connect(on_download_play)
+
+    # 编辑标签页加载视频 → 通知导出标签页
+    def on_source_changed(filepath):
+        export_tab.set_source(filepath, effects_tab.get_pipeline(), edit_tab.get_trim())
+    edit_tab.source_changed.connect(on_source_changed)
+
+    # 特效变更 → 通知导出标签页
+    def on_pipeline_changed():
+        if edit_tab.get_source():
+            export_tab.set_source(edit_tab.get_source(), effects_tab.get_pipeline(), edit_tab.get_trim())
+    effects_tab.pipeline_changed.connect(on_pipeline_changed)
+
+    # ---- 状态栏 ----
+    window.set_status(f"FFmpeg: {'✅' if ffmpeg_status['ok'] else '❌'} | {ffmpeg_status['message']}")
+
+    # ---- 退出清理 ----
+    def on_exit():
+        temp_manager.cleanup()
+
+    app.aboutToQuit.connect(on_exit)
+
+    # ---- 显示 ----
+    window.show()
+    sys.exit(app.exec())
+
+
+if __name__ == "__main__":
+    main()

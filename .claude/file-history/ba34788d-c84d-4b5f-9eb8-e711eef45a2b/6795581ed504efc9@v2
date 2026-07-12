@@ -1,0 +1,110 @@
+"""
+EffectPipeline — 有序特效链 → 合并 filter_complex
+【开发状态：已完成】
+"""
+
+from PyQt6.QtCore import QObject, pyqtSignal
+from app.effects.base import BaseEffect
+from app.effects.registry import EffectRegistry
+
+
+class EffectPipeline(QObject):
+    """有序特效列表，负责构建合并的 FFmpeg filter_complex 图"""
+
+    effects_changed = pyqtSignal()
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self._effects: list[BaseEffect] = []
+
+    # ---- 列表操作 ----
+    def add(self, effect: BaseEffect, index: int = -1):
+        if index < 0 or index >= len(self._effects):
+            self._effects.append(effect)
+        else:
+            self._effects.insert(index, effect)
+        self.effects_changed.emit()
+
+    def remove(self, index: int):
+        if 0 <= index < len(self._effects):
+            self._effects.pop(index)
+            self.effects_changed.emit()
+
+    def move(self, from_idx: int, to_idx: int):
+        if 0 <= from_idx < len(self._effects) and 0 <= to_idx < len(self._effects):
+            item = self._effects.pop(from_idx)
+            self._effects.insert(to_idx, item)
+            self.effects_changed.emit()
+
+    def toggle(self, index: int, enabled: bool):
+        if 0 <= index < len(self._effects):
+            self._effects[index].enabled = enabled
+            self.effects_changed.emit()
+
+    def clear(self):
+        self._effects.clear()
+        self.effects_changed.emit()
+
+    def __len__(self):
+        return len(self._effects)
+
+    def __getitem__(self, idx):
+        return self._effects[idx]
+
+    def __iter__(self):
+        return iter(self._effects)
+
+    # ---- filter 图构建 ----
+    def build_video_filter_graph(self) -> tuple[str, str]:
+        """
+        构建视频 filter_complex 图。
+        返回: (filter_complex_string, last_video_label)
+        例如: ("[0:v]setpts=0.5*PTS[v1];[v1]hflip[v2]", "[v2]")
+        """
+        segments = []
+        in_label = "0:v"
+        label_idx = 0
+
+        for effect in self._effects:
+            if not effect.enabled:
+                continue
+            out_label = f"v{label_idx + 1}" if label_idx > 0 else f"v{label_idx}"
+            label_idx += 1
+            out_label = f"v{label_idx}"
+            seg = effect.get_filter_string(in_label, out_label)
+            if seg.strip():
+                segments.append(seg)
+                in_label = out_label
+
+        filter_str = ";".join(segments) if segments else ""
+        return filter_str, f"[{in_label}]" if segments else "0:v"
+
+    def build_audio_filter_graph(self) -> tuple[str, str]:
+        """构建音频 filter_complex 图"""
+        segments = []
+        in_label = "0:a"
+        label_idx = 0
+
+        for effect in self._effects:
+            if not effect.enabled:
+                continue
+            seg = effect.get_audio_filter_string(in_label, f"a{label_idx + 1}")
+            if seg.strip():
+                segments.append(seg)
+                label_idx += 1
+                in_label = f"a{label_idx}"
+
+        filter_str = ";".join(segments) if segments else ""
+        return filter_str, f"[{in_label}]" if segments else "0:a"
+
+    # ---- 序列化 ----
+    def to_list(self) -> list[dict]:
+        return [e.to_dict() for e in self._effects]
+
+    def from_list(self, data: list[dict]):
+        self._effects = []
+        for item in data:
+            inst = EffectRegistry.instantiate(item)
+            if inst:
+                self._effects.append(inst)
+        self.effects_changed.emit()

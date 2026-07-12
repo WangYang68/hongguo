@@ -1,0 +1,58 @@
+"""
+导出格式预设
+【开发状态：已完成】
+"""
+
+PRESETS = {
+    "mp4_h264": {
+        "label": "MP4 H.264", "ext": "mp4",
+        "vcodec": "libx264", "acodec": "aac",
+        "description": "兼容性最好，适合所有平台",
+    },
+    "mp4_h265": {
+        "label": "MP4 H.265/HEVC", "ext": "mp4",
+        "vcodec": "libx265", "acodec": "aac",
+        "description": "更高压缩率，体积更小",
+    },
+    "webm_vp9": {
+        "label": "WebM VP9", "ext": "webm",
+        "vcodec": "libvpx-vp9", "acodec": "libopus",
+        "description": "适合 Web 播放",
+    },
+    "mkv_h264": {
+        "label": "MKV H.264", "ext": "mkv",
+        "vcodec": "libx264", "acodec": "aac",
+        "description": "无损容器，支持多音轨字幕",
+    },
+    "gif": {
+        "label": "GIF 动图", "ext": "gif",
+        "vcodec": "gif", "acodec": "",
+        "description": "动画 GIF，无音频",
+    },
+    "audio_mp3": {
+        "label": "仅音频 MP3", "ext": "mp3",
+        "vcodec": "", "acodec": "libmp3lame",
+        "description": "仅提取/导出音频",
+    },
+    "audio_wav": {
+        "label": "仅音频 WAV", "ext": "wav",
+        "vcodec": "", "acodec": "pcm_s16le",
+        "description": "无损音频格式",
+    },
+}
+
+RESOLUTION_OPTIONS = [
+    ("原始", 0, 0),
+    ("4K (3840x2160)", 3840, 2160),
+    ("2K (2560x1440)", 2560, 1440),
+    ("1080p (1920x1080)", 1920, 1080),
+    ("720p (1280x720)", 1280, 720),
+    ("480p (854x480)", 854, 480),
+]
+
+CRF_OPTIONS = [
+    ("最高质量 (CRF 15)", 15),
+    ("高质量 (CRF 18)", 18),
+    ("标准 (CRF 23)", 23),
+    ("较小文件 (CRF 28)", 28),
+]

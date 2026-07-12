@@ -1,0 +1,217 @@
+"""
+FFmpegCommandBuilder — 流式 API 构建 FFmpeg 命令行
+【开发状态：已完成】
+
+使用示例:
+    cmd = (FFmpegCommandBuilder()
+        .add_input("in.mp4", ss=10, t=5)
+        .filter_complex("[0:v]setpts=0.5*PTS[v];[0:a]atempo=2.0[a]")
+        .map("[v]").map("[a]")
+        .vcodec("libx264").crf(23)
+        .add_output("out.mp4")
+        .overwrite().progress())
+    subprocess.run(cmd.build())
+"""
+
+import shlex
+import sys
+
+
+class FFmpegCommandBuilder:
+    """流式 API 构建 FFmpeg 参数列表。
+
+    内部状态分为三部分:
+      _inputs:   每个元素是 (path, {opt: val})  dict
+      _outputs:  每个元素是 (path, {opt: val}, filters:list, maps:list)
+      _global:   全局选项
+    """
+
+    def __init__(self, ffmpeg_path: str = "ffmpeg"):
+        self._ffmpeg = ffmpeg_path
+        self._inputs: list[tuple[str, dict]] = []
+        self._outputs: list[tuple[str, dict, list, list]] = []
+        self._filter_complex: list[str] = []
+        self._overwrite = False
+        self._log_level = ""
+        self._add_progress = False
+
+    # ===== 输入 =====
+    def add_input(self, path: str, **options) -> "FFmpegCommandBuilder":
+        """添加输入文件。options 如 ss=10, t=5, itsoffset=2"""
+        self._inputs.append((path, options))
+        return self
+
+    # ===== 输出 =====
+    def add_output(self, path: str, **options) -> "FFmpegCommandBuilder":
+        """添加输出文件。options 如 f='mp4', vcodec='libx264'"""
+        self._outputs.append((path, options, [], []))
+        return self
+
+    # ===== filter_complex =====
+    def filter_complex(self, graph: str) -> "FFmpegCommandBuilder":
+        """添加一段 filter_complex 图"""
+        self._filter_complex.append(graph)
+        return self
+
+    def filter_simple(self, vid_filter: str = "", aud_filter: str = "") -> "FFmpegCommandBuilder":
+        """为最后一个输出添加简单 -vf / -af"""
+        if not self._outputs:
+            return self
+        _, _, filters, _ = self._outputs[-1]
+        if vid_filter:
+            filters.append(("vf", vid_filter))
+        if aud_filter:
+            filters.append(("af", aud_filter))
+        return self
+
+    # ===== 流映射 =====
+    def map(self, spec: str, output_idx: int = -1) -> "FFmpegCommandBuilder":
+        """添加 -map 到指定输出。spec: '0:v', '[v]', '0:a'"""
+        if not self._outputs:
+            return self
+        _, _, _, maps = self._outputs[output_idx]
+        maps.append(spec)
+        return self
+
+    # ===== 编解码器 =====
+    def vcodec(self, codec: str, output_idx: int = -1) -> "FFmpegCommandBuilder":
+        return self._set_output_opt("c:v", codec, output_idx)
+
+    def acodec(self, codec: str, output_idx: int = -1) -> "FFmpegCommandBuilder":
+        return self._set_output_opt("c:a", codec, output_idx)
+
+    def scodec(self, codec: str, output_idx: int = -1) -> "FFmpegCommandBuilder":
+        return self._set_output_opt("c:s", codec, output_idx)
+
+    def video_bitrate(self, br: str, output_idx: int = -1) -> "FFmpegCommandBuilder":
+        return self._set_output_opt("b:v", br, output_idx)
+
+    def audio_bitrate(self, br: str, output_idx: int = -1) -> "FFmpegCommandBuilder":
+        return self._set_output_opt("b:a", br, output_idx)
+
+    # ===== 分辨率/质量 =====
+    def resolution(self, w: int, h: int, output_idx: int = -1) -> "FFmpegCommandBuilder":
+        return self._set_output_opt("s", f"{w}x{h}", output_idx)
+
+    def frame_rate(self, fps: float, output_idx: int = -1) -> "FFmpegCommandBuilder":
+        return self._set_output_opt("r", str(fps), output_idx)
+
+    def crf(self, value: int, output_idx: int = -1) -> "FFmpegCommandBuilder":
+        return self._set_output_opt("crf", str(value), output_idx)
+
+    def preset(self, name: str, output_idx: int = -1) -> "FFmpegCommandBuilder":
+        return self._set_output_opt("preset", name, output_idx)
+
+    def pix_fmt(self, fmt: str, output_idx: int = -1) -> "FFmpegCommandBuilder":
+        return self._set_output_opt("pix_fmt", fmt, output_idx)
+
+    def faststart(self, output_idx: int = -1) -> "FFmpegCommandBuilder":
+        return self._set_output_opt("movflags", "+faststart", output_idx)
+
+    def audio_channels(self, n: int, output_idx: int = -1) -> "FFmpegCommandBuilder":
+        return self._set_output_opt("ac", str(n), output_idx)
+
+    def sample_rate(self, rate: int, output_idx: int = -1) -> "FFmpegCommandBuilder":
+        return self._set_output_opt("ar", str(rate), output_idx)
+
+    # ===== 便捷方法 =====
+    def trim(self, start: float = 0, duration: float = 0, input_idx: int = 0) -> "FFmpegCommandBuilder":
+        """裁剪输入"""
+        if 0 <= input_idx < len(self._inputs):
+            _, opts = self._inputs[input_idx]
+            if start > 0:
+                opts["ss"] = start
+            if duration > 0:
+                opts["t"] = duration
+        return self
+
+    def loop(self, count: int = 1, input_idx: int = 0) -> "FFmpegCommandBuilder":
+        """循环输入"""
+        if 0 <= input_idx < len(self._inputs):
+            _, opts = self._inputs[input_idx]
+            opts["stream_loop"] = count
+        return self
+
+    def vframes(self, n: int, output_idx: int = -1) -> "FFmpegCommandBuilder":
+        return self._set_output_opt("vframes", str(n), output_idx)
+
+    # ===== 全局选项 =====
+    def overwrite(self, yes: bool = True) -> "FFmpegCommandBuilder":
+        self._overwrite = yes
+        return self
+
+    def log_level(self, level: str) -> "FFmpegCommandBuilder":
+        self._log_level = level
+        return self
+
+    def progress(self, pipe: bool = True) -> "FFmpegCommandBuilder":
+        self._add_progress = pipe
+        return self
+
+    def nostats(self) -> "FFmpegCommandBuilder":
+        return self._set_global("nostats")
+
+    # ===== 构建 =====
+    def build(self) -> list[str]:
+        """生成最终参数列表"""
+        args = [self._ffmpeg]
+
+        # 全局
+        if self._overwrite:
+            args.append("-y")
+        if self._log_level:
+            args.extend(["-v", self._log_level])
+        if self._add_progress:
+            args.extend(["-progress", "pipe:1", "-nostats"])
+
+        # 输入
+        for path, opts in self._inputs:
+            for k, v in opts.items():
+                args.extend([f"-{k}", str(v)])
+            args.extend(["-i", str(path)])
+
+        # filter_complex
+        if self._filter_complex:
+            combined = ";".join(self._filter_complex)
+            args.extend(["-filter_complex", combined])
+
+        # 输出
+        for path, opts, filters, maps in self._outputs:
+            for k, v in opts.items():
+                args.extend([f"-{k}", str(v)])
+            for ft, spec in filters:
+                args.extend([f"-{ft}", spec])
+            for m in maps:
+                args.extend(["-map", m])
+            args.append(str(path))
+
+        return args
+
+    def dry_run(self) -> str:
+        """返回可读的命令行字符串（用于调试）"""
+        return " ".join(shlex.quote(a) for a in self.build())
+
+    def copy(self) -> "FFmpegCommandBuilder":
+        """深拷贝"""
+        import copy
+        new = FFmpegCommandBuilder(self._ffmpeg)
+        new._inputs = copy.deepcopy(self._inputs)
+        new._outputs = copy.deepcopy(self._outputs)
+        new._filter_complex = list(self._filter_complex)
+        new._overwrite = self._overwrite
+        new._log_level = self._log_level
+        new._add_progress = self._add_progress
+        return new
+
+    # ===== 内部 =====
+    def _set_output_opt(self, key: str, val: str, idx: int) -> "FFmpegCommandBuilder":
+        if not self._outputs:
+            return self
+        _, opts, _, _ = self._outputs[idx]
+        opts[key] = val
+        return self
+
+    def _set_global(self, flag: str) -> "FFmpegCommandBuilder":
+        """添加无值全局选项"""
+        self._overwrite = self._overwrite  # no-op placeholder
+        return self

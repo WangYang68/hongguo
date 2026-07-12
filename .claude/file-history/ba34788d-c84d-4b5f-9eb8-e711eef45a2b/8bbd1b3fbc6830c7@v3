@@ -1,0 +1,95 @@
+"""
+BaseEffect — 所有特效的抽象基类
+【开发状态：已完成】
+"""
+
+from abc import ABC, abstractmethod, ABCMeta
+from dataclasses import dataclass
+
+
+@dataclass
+class EffectParam:
+    """特效参数描述符"""
+    name: str                              # 内部名称
+    label: str                             # 显示名称
+    param_type: type = str                 # Python 类型
+    default: any = None                    # 默认值
+    min_val: float = None                  # 最小值
+    max_val: float = None                  # 最大值
+    step: float = None                     # 步长
+    options: list = None                   # 下拉选项 [(val,label),...]
+    suffix: str = ""                       # 显示后缀 (%, px, x)
+
+
+# 合并 ABCMeta + 自动注册
+class _AutoRegisterABCMeta(ABCMeta):
+    """元类：BaseEffect 的子类自动注册到 EffectRegistry"""
+    def __new__(mcs, name, bases, namespace):
+        cls = super().__new__(mcs, name, bases, namespace)
+        if name != "BaseEffect":
+            # 延迟导入避免循环依赖
+            from app.effects.registry import EffectRegistry
+            EffectRegistry.register(cls)
+        return cls
+
+
+class BaseEffect(ABC, metaclass=_AutoRegisterABCMeta):
+    """
+    所有视频特效的基类。
+    子类必须设置类属性并实现 get_filter_string()。
+    """
+
+    # ---- 子类必须覆盖 ----
+    name: str = "BaseEffect"               # 特效名称
+    category: str = "其他"                  # 分类: 时间/空间/色彩/模糊/叠加/抠像/音频/组合
+    description: str = ""                  # 简短描述
+    status: str = "已完成"                  # 开发状态
+
+    @classmethod
+    def get_param_defs(cls) -> list[EffectParam]:
+        """返回参数定义列表。子类覆盖此方法添加参数。"""
+        return []
+
+    # ---- 实例 ----
+    def __init__(self):
+        self.enabled: bool = True
+        # 从类定义初始化参数
+        self._params: dict[str, any] = {}
+        for p in self.get_param_defs():
+            self._params[p.name] = p.default
+
+    def get_param(self, name: str):
+        return self._params.get(name)
+
+    def set_param(self, name: str, value):
+        if name in self._params:
+            self._params[name] = value
+
+    def get_all_params(self) -> dict:
+        return dict(self._params)
+
+    @abstractmethod
+    def get_filter_string(self, in_label: str = "0:v", out_label: str = "v0") -> str:
+        """
+        返回 FFmpeg filter_complex 片段。
+        格式: "[{in_label}]filter=params[{out_label}]"
+        """
+        ...
+
+    def get_audio_filter_string(self, in_label: str = "0:a", out_label: str = "a0") -> str:
+        """音频处理片段（有音频处理的特效覆盖此方法）"""
+        return ""
+
+    def to_dict(self) -> dict:
+        return {
+            "type": self.__class__.__name__,
+            "params": dict(self._params),
+            "enabled": self.enabled,
+        }
+
+    @classmethod
+    def from_dict(cls, data: dict) -> "BaseEffect":
+        instance = cls()
+        instance._params.update(data.get("params", {}))
+        instance.enabled = data.get("enabled", True)
+        return instance

@@ -1,0 +1,96 @@
+"""
+ExportManager — 导出流程编排
+【开发状态：已完成】
+"""
+
+from app.ffmpeg.command_builder import FFmpegCommandBuilder
+from app.export.presets import PRESETS
+from app.effects.pipeline import EffectPipeline
+from app.editing.trim import TrimHandler
+from app.settings import FFMPEG_PATH
+
+
+class ExportManager:
+    """验证设置 → 构建 FFmpeg 命令 → 返回 command list"""
+
+    def __init__(self, source_file: str, pipeline: EffectPipeline, trim: TrimHandler):
+        self.source_file = source_file
+        self.pipeline = pipeline
+        self.trim = trim
+        self.preset_key = "mp4_h264"
+        self.width = 0   # 0 = 原始
+        self.height = 0
+        self.crf = 23
+        self.extra_opts: dict = {}
+
+    def set_preset(self, key: str):
+        if key in PRESETS:
+            self.preset_key = key
+
+    def set_resolution(self, w: int, h: int):
+        self.width = w
+        self.height = h
+
+    def set_crf(self, crf: int):
+        self.crf = crf
+
+    def build(self, output_path: str) -> list[str]:
+        """构建 FFmpeg 命令"""
+        preset = PRESETS.get(self.preset_key, PRESETS["mp4_h264"])
+        builder = FFmpegCommandBuilder(FFMPEG_PATH)
+
+        # 输入
+        builder.add_input(self.source_file)
+        if self.trim.is_active():
+            builder.trim(self.trim.start_sec, self.trim.duration)
+
+        # 特效 filter graph
+        vid_graph, vid_label = self.pipeline.build_video_filter_graph()
+        aud_graph, aud_label = self.pipeline.build_audio_filter_graph()
+
+        has_vid = bool(vid_graph.strip())
+        has_aud = bool(aud_graph.strip())
+
+        if has_vid and has_aud:
+            combined = vid_graph + ";" + aud_graph
+            builder.filter_complex(combined)
+            # 映射
+            if vid_label != "0:v":
+                builder.map(vid_label)
+            if aud_label != "0:a":
+                builder.map(aud_label)
+        elif has_vid:
+            builder.filter_complex(vid_graph)
+            if vid_label != "0:v":
+                builder.map(vid_label)
+        elif has_aud:
+            builder.filter_complex(aud_graph)
+            if aud_label != "0:a":
+                builder.map(aud_label)
+
+        # 编解码
+        if preset["vcodec"]:
+            builder.vcodec(preset["vcodec"])
+        if preset["acodec"]:
+            builder.acodec(preset["acodec"])
+
+        # 分辨率
+        if self.width > 0 and self.height > 0:
+            builder.resolution(self.width, self.height)
+
+        # CRF
+        if self.crf and preset["vcodec"] in ("libx264", "libx265", "libvpx-vp9"):
+            builder.crf(self.crf)
+
+        # 音频参数
+        if preset.get("acodec") == "aac":
+            builder.audio_bitrate("128k")
+
+        # MP4 faststart
+        if preset["ext"] == "mp4":
+            builder.faststart()
+
+        builder.overwrite().progress()
+        builder.add_output(output_path)
+
+        return builder.build()

@@ -1,0 +1,467 @@
+package com.example.magicpinao.ui.screens.auth
+
+import androidx.compose.animation.*
+import androidx.compose.animation.core.*
+import androidx.compose.foundation.background
+import androidx.compose.foundation.clickable
+import androidx.compose.foundation.layout.*
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.shape.CircleShape
+import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.text.KeyboardActions
+import androidx.compose.foundation.text.KeyboardOptions
+import androidx.compose.foundation.verticalScroll
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.*
+import androidx.compose.material3.*
+import androidx.compose.runtime.*
+import androidx.compose.ui.Alignment
+import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clip
+import androidx.compose.ui.focus.FocusRequester
+import androidx.compose.ui.focus.focusRequester
+import androidx.compose.ui.focus.onFocusChanged
+import androidx.compose.ui.graphics.Brush
+import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.LocalFocusManager
+import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.input.ImeAction
+import androidx.compose.ui.text.input.KeyboardType
+import androidx.compose.ui.text.input.PasswordVisualTransformation
+import androidx.compose.ui.text.input.VisualTransformation
+import androidx.compose.ui.text.style.TextAlign
+import androidx.compose.ui.unit.dp
+import androidx.compose.ui.unit.sp
+import com.example.magicpinao.core.utils.EmailSender
+import com.example.magicpinao.ui.theme.*
+import kotlinx.coroutines.delay
+import kotlinx.coroutines.launch
+
+/**
+ * 注册页面 - 含邮箱验证码发送与验证
+ */
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable
+fun RegisterScreen(
+    onRegisterSuccess: () -> Unit,
+    onNavigateBack: () -> Unit,
+    onRegister: suspend (String, String, String, String?) -> Result<String>
+) {
+    val scope = rememberCoroutineScope()
+    val focusManager = LocalFocusManager.current
+
+    var email by remember { mutableStateOf("") }
+    var nickname by remember { mutableStateOf("") }
+    var password by remember { mutableStateOf("") }
+    var passwordVisible by remember { mutableStateOf(false) }
+    var inviteCode by remember { mutableStateOf("") }
+    var verificationCode by remember { mutableStateOf("") }
+
+    var generatedCode by remember { mutableStateOf<String?>(null) }
+    var isSendingCode by remember { mutableStateOf(false) }
+    var codeSentMessage by remember { mutableStateOf<String?>(null) }
+    var isRegistering by remember { mutableStateOf(false) }
+    var errorMessage by remember { mutableStateOf<String?>(null) }
+
+    val codeFocusRequester = remember { FocusRequester() }
+    val nicknameFocusRequester = remember { FocusRequester() }
+    val passwordFocusRequester = remember { FocusRequester() }
+    val scrollState = rememberScrollState()
+
+    // 邮箱失去焦点时发送验证码
+    var emailWasFocused by remember { mutableStateOf(false) }
+
+    Box(
+        modifier = Modifier
+            .fillMaxSize()
+            .background(
+                Brush.verticalGradient(
+                    colors = listOf(
+                        Color(0xFF0F0F1E),
+                        Color(0xFF1A1040),
+                        Color(0xFF0F0F1E)
+                    ),
+                    startY = 0f,
+                    endY = 1200f
+                )
+            )
+    ) {
+        Column(
+            modifier = Modifier
+                .fillMaxSize()
+                .verticalScroll(scrollState)
+                .padding(horizontal = 32.dp),
+            horizontalAlignment = Alignment.CenterHorizontally
+        ) {
+            Spacer(modifier = Modifier.height(40.dp))
+
+            // 返回按钮
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.Start
+            ) {
+                IconButton(onClick = onNavigateBack) {
+                    Icon(
+                        Icons.Default.ArrowBack,
+                        contentDescription = "返回",
+                        tint = TextPrimary,
+                        modifier = Modifier.size(24.dp)
+                    )
+                }
+            }
+
+            // 标题
+            Text(
+                text = "创建账号",
+                style = MaterialTheme.typography.headlineMedium.copy(
+                    fontWeight = FontWeight.Bold,
+                    brush = Brush.horizontalGradient(
+                        listOf(PrimaryPurpleLight, SecondaryCyan)
+                    )
+                )
+            )
+
+            Text(
+                text = "注册成为魔琴用户",
+                style = MaterialTheme.typography.bodyLarge,
+                color = TextHint,
+                modifier = Modifier.padding(top = 4.dp)
+            )
+
+            Spacer(modifier = Modifier.height(32.dp))
+
+            // 邮箱输入框（失去焦点时发送验证码）
+            OutlinedTextField(
+                value = email,
+                onValueChange = { email = it; errorMessage = null },
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .onFocusChanged { focusState ->
+                        if (emailWasFocused && !focusState.isFocused && email.isNotBlank()) {
+                            // 邮箱失去焦点 -> 发送验证码
+                            if (isValidEmail(email)) {
+                                isSendingCode = true
+                                codeSentMessage = null
+                                errorMessage = null
+                                scope.launch {
+                                    val code = EmailSender.sendVerificationCode(email)
+                                    isSendingCode = false
+                                    if (code != null) {
+                                        generatedCode = code
+                                        codeSentMessage = "验证码已发送至 $email，请查收（1-2分钟内到达）"
+                                        codeFocusRequester.requestFocus()
+                                    } else {
+                                        errorMessage = "验证码发送失败，请检查邮箱地址或稍后重试"
+                                    }
+                                }
+                            } else {
+                                errorMessage = "请输入正确的邮箱格式"
+                            }
+                        }
+                        emailWasFocused = focusState.isFocused
+                    },
+                label = { Text("邮箱") },
+                placeholder = { Text("请输入邮箱地址", color = TextHint) },
+                leadingIcon = {
+                    Icon(Icons.Default.Email, contentDescription = null, tint = PrimaryPurpleLight)
+                },
+                trailingIcon = {
+                    if (isSendingCode) {
+                        CircularProgressIndicator(
+                            modifier = Modifier.size(20.dp),
+                            color = PrimaryPurpleLight,
+                            strokeWidth = 2.dp
+                        )
+                    }
+                },
+                singleLine = true,
+                keyboardOptions = KeyboardOptions(
+                    keyboardType = KeyboardType.Email,
+                    imeAction = ImeAction.Next
+                ),
+                colors = textFieldColors(),
+                shape = RoundedCornerShape(16.dp)
+            )
+
+            // 验证码发送提示
+            AnimatedVisibility(
+                visible = codeSentMessage != null,
+                enter = fadeIn() + expandVertically(),
+                exit = fadeOut() + shrinkVertically()
+            ) {
+                Text(
+                    text = codeSentMessage ?: "",
+                    color = SuccessGreen,
+                    style = MaterialTheme.typography.bodySmall,
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(horizontal = 4.dp, vertical = 6.dp)
+                        .clip(RoundedCornerShape(8.dp))
+                        .background(SuccessGreen.copy(alpha = 0.1f))
+                        .padding(12.dp)
+                )
+            }
+
+            Spacer(modifier = Modifier.height(12.dp))
+
+            // 验证码输入框
+            OutlinedTextField(
+                value = verificationCode,
+                onValueChange = { if (it.length <= 6 && it.all { c -> c.isDigit() }) verificationCode = it; errorMessage = null },
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .focusRequester(codeFocusRequester),
+                label = { Text("验证码") },
+                placeholder = { Text("请输入6位验证码", color = TextHint) },
+                leadingIcon = {
+                    Icon(Icons.Default.Star, contentDescription = null, tint = PrimaryPurpleLight)
+                },
+                singleLine = true,
+                keyboardOptions = KeyboardOptions(
+                    keyboardType = KeyboardType.Number,
+                    imeAction = ImeAction.Next
+                ),
+                keyboardActions = KeyboardActions(
+                    onNext = { nicknameFocusRequester.requestFocus() }
+                ),
+                colors = textFieldColors(),
+                shape = RoundedCornerShape(16.dp)
+            )
+
+            Spacer(modifier = Modifier.height(12.dp))
+
+            // 昵称输入框
+            OutlinedTextField(
+                value = nickname,
+                onValueChange = { if (it.length <= 20) nickname = it; errorMessage = null },
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .focusRequester(nicknameFocusRequester),
+                label = { Text("昵称") },
+                placeholder = { Text("2-20个字符", color = TextHint) },
+                leadingIcon = {
+                    Icon(Icons.Default.Person, contentDescription = null, tint = PrimaryPurpleLight)
+                },
+                supportingText = { Text("${nickname.length}/20", color = TextHint) },
+                singleLine = true,
+                keyboardOptions = KeyboardOptions(
+                    keyboardType = KeyboardType.Text,
+                    imeAction = ImeAction.Next
+                ),
+                keyboardActions = KeyboardActions(
+                    onNext = { passwordFocusRequester.requestFocus() }
+                ),
+                colors = textFieldColors(),
+                shape = RoundedCornerShape(16.dp)
+            )
+
+            Spacer(modifier = Modifier.height(12.dp))
+
+            // 密码输入框
+            OutlinedTextField(
+                value = password,
+                onValueChange = { password = it; errorMessage = null },
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .focusRequester(passwordFocusRequester),
+                label = { Text("密码") },
+                placeholder = { Text("至少6位字符", color = TextHint) },
+                leadingIcon = {
+                    Icon(Icons.Default.Lock, contentDescription = null, tint = PrimaryPurpleLight)
+                },
+                trailingIcon = {
+                    IconButton(onClick = { passwordVisible = !passwordVisible }) {
+                        Text(
+                            text = if (passwordVisible) "🙈" else "👁",
+                            fontSize = 18.sp
+                        )
+                    }
+                },
+                singleLine = true,
+                visualTransformation = if (passwordVisible) VisualTransformation.None else PasswordVisualTransformation(),
+                keyboardOptions = KeyboardOptions(
+                    keyboardType = KeyboardType.Password,
+                    imeAction = ImeAction.Next
+                ),
+                colors = textFieldColors(),
+                shape = RoundedCornerShape(16.dp)
+            )
+
+            // 密码强度指示
+            if (password.isNotEmpty()) {
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(horizontal = 4.dp, vertical = 4.dp),
+                    horizontalArrangement = Arrangement.spacedBy(4.dp)
+                ) {
+                    val strength = when {
+                        password.length < 6 -> 0
+                        password.length < 8 -> 1
+                        password.length < 12 -> 2
+                        password.any { it.isUpperCase() } && password.any { it.isDigit() } -> 3
+                        else -> 2
+                    }
+                    repeat(3) { index ->
+                        Box(
+                            modifier = Modifier
+                                .weight(1f)
+                                .height(4.dp)
+                                .clip(RoundedCornerShape(2.dp))
+                                .background(
+                                    if (index < strength) Brush.horizontalGradient(
+                                        listOf(PrimaryPurple, SecondaryCyan)
+                                    ) else Brush.horizontalGradient(
+                                        listOf(SurfaceLight, SurfaceLight)
+                                    )
+                                )
+                        )
+                    }
+                }
+                Text(
+                    text = when {
+                        password.length < 6 -> "密码过短"
+                        password.length < 8 -> "中等强度"
+                        else -> "强度较高"
+                    },
+                    style = MaterialTheme.typography.labelSmall,
+                    color = when {
+                        password.length < 6 -> ErrorRed
+                        password.length < 8 -> WarningOrange
+                        else -> SuccessGreen
+                    },
+                    modifier = Modifier.fillMaxWidth().padding(horizontal = 4.dp)
+                )
+            }
+
+            Spacer(modifier = Modifier.height(12.dp))
+
+            // 邀请码输入框
+            OutlinedTextField(
+                value = inviteCode,
+                onValueChange = { inviteCode = it; errorMessage = null },
+                modifier = Modifier.fillMaxWidth(),
+                label = { Text("邀请码（可选）") },
+                placeholder = { Text("如有邀请码请填写", color = TextHint) },
+                leadingIcon = {
+                    Icon(Icons.Default.Star, contentDescription = null, tint = PrimaryPurpleLight)
+                },
+                singleLine = true,
+                keyboardOptions = KeyboardOptions(
+                    imeAction = ImeAction.Done
+                ),
+                keyboardActions = KeyboardActions(
+                    onDone = { focusManager.clearFocus() }
+                ),
+                colors = textFieldColors(),
+                shape = RoundedCornerShape(16.dp)
+            )
+
+            // 错误提示
+            AnimatedVisibility(
+                visible = errorMessage != null,
+                enter = fadeIn() + expandVertically(),
+                exit = fadeOut() + shrinkVertically()
+            ) {
+                Text(
+                    text = errorMessage ?: "",
+                    color = ErrorRed,
+                    style = MaterialTheme.typography.bodySmall,
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(horizontal = 4.dp, vertical = 8.dp)
+                        .clip(RoundedCornerShape(8.dp))
+                        .background(ErrorRed.copy(alpha = 0.1f))
+                        .padding(12.dp)
+                )
+            }
+
+            Spacer(modifier = Modifier.height(20.dp))
+
+            // 注册按钮
+            Button(
+                onClick = {
+                    // 前端验证
+                    when {
+                        email.isBlank() -> errorMessage = "请输入邮箱"
+                        !isValidEmail(email) -> errorMessage = "邮箱格式不正确"
+                        verificationCode.isBlank() -> errorMessage = "请输入验证码"
+                        generatedCode == null -> errorMessage = "请先获取验证码"
+                        verificationCode != generatedCode -> errorMessage = "验证码错误"
+                        nickname.isBlank() -> errorMessage = "请输入昵称"
+                        nickname.length < 2 -> errorMessage = "昵称至少需要2个字符"
+                        password.isBlank() -> errorMessage = "请输入密码"
+                        password.length < 6 -> errorMessage = "密码至少需要6位字符"
+                        else -> {
+                            isRegistering = true
+                            errorMessage = null
+                        }
+                    }
+                },
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .height(54.dp),
+                enabled = !isRegistering,
+                shape = RoundedCornerShape(16.dp),
+                colors = ButtonDefaults.buttonColors(
+                    containerColor = PrimaryPurple,
+                    disabledContainerColor = PrimaryPurple.copy(alpha = 0.3f)
+                ),
+                elevation = ButtonDefaults.buttonElevation(
+                    defaultElevation = 8.dp,
+                    pressedElevation = 2.dp
+                )
+            ) {
+                if (isRegistering) {
+                    CircularProgressIndicator(
+                        modifier = Modifier.size(24.dp),
+                        color = Color.White,
+                        strokeWidth = 2.dp
+                    )
+                } else {
+                    Text(
+                        text = "注 册",
+                        style = MaterialTheme.typography.titleMedium.copy(
+                            fontWeight = FontWeight.Bold,
+                            letterSpacing = 4.sp
+                        ),
+                        color = Color.White
+                    )
+                }
+            }
+
+            Spacer(modifier = Modifier.height(16.dp))
+
+            // 返回登录链接
+            Text(
+                text = "已有账号？返回登录",
+                color = SecondaryCyan,
+                style = MaterialTheme.typography.bodyMedium.copy(fontWeight = FontWeight.Bold),
+                modifier = Modifier.clickable { onNavigateBack() }
+            )
+
+            Spacer(modifier = Modifier.height(32.dp))
+        }
+    }
+
+    // 异步执行注册
+    LaunchedEffect(isRegistering) {
+        if (isRegistering) {
+            val finalInviteCode = inviteCode.ifBlank { null }
+            val result = onRegister(email, nickname, password, finalInviteCode)
+            isRegistering = false
+            result.fold(
+                onSuccess = { onRegisterSuccess() },
+                onFailure = { errorMessage = it.message ?: "注册失败，请重试" }
+            )
+        }
+    }
+}
+
+/**
+ * 验证邮箱格式
+ */
+private fun isValidEmail(email: String): Boolean {
+    return Regex("[^@]+@[^@]+\\.[^@]+").matches(email)
+}

@@ -1,0 +1,51 @@
+"""
+文件工具函数
+【开发状态：已完成】
+"""
+
+import re
+
+
+def sanitize_filename(name: str, max_len: int = 80) -> str:
+    """移除文件名中的非法字符，截断到指定长度"""
+    name = re.sub(r'[\\/*?:"<>|\n\r\t]', "_", name)
+    name = re.sub(r"_+", "_", name)
+    name = name.strip("_. ")
+    if len(name) > max_len:
+        name = name[:max_len].rsplit("_", 1)[0]
+    return name or "untitled"
+
+
+def format_filesize(size_bytes, default="未知大小") -> str:
+    """文件大小格式化"""
+    if not size_bytes:
+        return default
+    if size_bytes < 1024:
+        return f"{size_bytes}B"
+    elif size_bytes < 1024 * 1024:
+        return f"{size_bytes / 1024:.0f}KB"
+    elif size_bytes < 1024 * 1024 * 1024:
+        return f"{size_bytes / (1024 * 1024):.1f}MB"
+    else:
+        return f"{size_bytes / (1024 * 1024 * 1024):.2f}GB"
+
+
+def format_duration(seconds) -> str:
+    """时长格式化 mm:ss 或 h:mm:ss"""
+    if not seconds:
+        return "00:00"
+    m, s = divmod(int(seconds), 60)
+    h, m = divmod(m, 60)
+    return f"{h}:{m:02d}:{s:02d}" if h else f"{m}:{s:02d}"
+
+
+def ensure_unique_path(path) -> str:
+    """确保文件路径不冲突，冲突时自动加序号"""
+    import os
+    if not os.path.exists(path):
+        return str(path)
+    base, ext = os.path.splitext(str(path))
+    counter = 1
+    while os.path.exists(f"{base}_{counter}{ext}"):
+        counter += 1
+    return f"{base}_{counter}{ext}"

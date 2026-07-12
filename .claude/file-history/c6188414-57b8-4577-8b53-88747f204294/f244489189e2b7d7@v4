@@ -1,0 +1,614 @@
+package com.example.magicpinao.core.accessibility
+
+import android.app.NotificationChannel
+import android.app.NotificationManager
+import android.app.Service
+import android.content.Context
+import android.content.Intent
+import android.graphics.Color
+import android.graphics.PixelFormat
+import android.os.Build
+import android.os.Handler
+import android.os.IBinder
+import android.os.Looper
+import android.provider.Settings
+import android.util.Log
+import android.view.Gravity
+import android.view.LayoutInflater
+import android.view.View
+import android.view.WindowManager
+import android.widget.*
+import androidx.core.app.NotificationCompat
+import com.example.magicpinao.R
+import com.example.magicpinao.core.calibration.PianoLayout
+import com.example.magicpinao.core.calibration.PianoLayoutType
+import com.example.magicpinao.core.calibration.PianoLayouts
+import com.example.magicpinao.core.calibration.Transposer
+import com.example.magicpinao.core.data.CoordinateEntity
+import com.example.magicpinao.core.data.CoordinateRepository
+import com.example.magicpinao.core.data.PianoKeyCoordinate
+import com.google.gson.Gson
+import kotlinx.coroutines.*
+
+/**
+ * 悬浮窗坐标标定服务 — 支持多布局、可拖动标记
+ *
+ * 标定流程：
+ * 1. 选择钢琴布局（21/36/15键）
+ * 2. 进入标定模式：半透明覆盖层显示所有琴键标记
+ * 3. 拖动标记到对应琴键位置
+ * 4. 点击完成保存
+ */
+class FloatingCalibrationService : Service() {
+
+    companion object {
+        private const val TAG = "FloatingCalibration"
+        private const val NOTIFICATION_ID = 1001
+        private const val CHANNEL_ID = "calibration_channel"
+
+        const val ACTION_START_CALIBRATION = "ACTION_START_CALIBRATION"
+        const val ACTION_STOP_CALIBRATION = "ACTION_STOP_CALIBRATION"
+        const val EXTRA_PACKAGE_NAME = "EXTRA_PACKAGE_NAME"
+        const val EXTRA_KEY_COUNT = "EXTRA_KEY_COUNT"
+        const val EXTRA_LAYOUT_TYPE = "EXTRA_LAYOUT_TYPE"
+
+        var instance: FloatingCalibrationService? = null
+            private set
+
+        fun start(context: Context, packageName: String, keyCount: Int = 21, layoutType: String = "LAYOUT_21") {
+            val intent = Intent(context, FloatingCalibrationService::class.java).apply {
+                action = ACTION_START_CALIBRATION
+                putExtra(EXTRA_PACKAGE_NAME, packageName)
+                putExtra(EXTRA_KEY_COUNT, keyCount)
+                putExtra(EXTRA_LAYOUT_TYPE, layoutType)
+            }
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+                context.startForegroundService(intent)
+            } else {
+                context.startService(intent)
+            }
+        }
+
+        fun stop(context: Context) {
+            val intent = Intent(context, FloatingCalibrationService::class.java).apply {
+                action = ACTION_STOP_CALIBRATION
+            }
+            context.startService(intent)
+        }
+    }
+
+    private var windowManager: WindowManager? = null
+    private var floatingView: View? = null
+    private var overlayView: View? = null
+
+    private val scope = CoroutineScope(Dispatchers.Main + SupervisorJob())
+    private val handler = Handler(Looper.getMainLooper())
+
+    // 布局相关
+    private var pianoLayout: PianoLayout = PianoLayouts.LAYOUT_21
+    private var layoutType = PianoLayoutType.LAYOUT_21
+    private var totalKeys = 21
+    private var currentAppPackage = ""
+
+    // 每个键的坐标标记
+    data class KeyMarker(
+        val keyIndex: Int,
+        var x: Float = 0f,
+        var y: Float = 0f,
+        val label: String = ""
+    )
+    private val markers = mutableListOf<KeyMarker>()
+    private var selectedMarkerIndex = -1
+
+    // 默认等分布局
+    private val defaultCols = 7
+    private val defaultRows = 3
+
+    // UI引用
+    private var tvStep: TextView? = null
+    private var layoutSpinner: Spinner? = null
+
+    override fun onCreate() {
+        super.onCreate()
+        instance = this
+    }
+
+    override fun onBind(intent: Intent?): IBinder? = null
+
+    override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
+        when (intent?.action) {
+            ACTION_START_CALIBRATION -> {
+                currentAppPackage = intent.getStringExtra(EXTRA_PACKAGE_NAME) ?: ""
+                totalKeys = intent.getIntExtra(EXTRA_KEY_COUNT, 21)
+                val ltStr = intent.getStringExtra(EXTRA_LAYOUT_TYPE) ?: "LAYOUT_21"
+                layoutType = try { PianoLayoutType.valueOf(ltStr) } catch (e: Exception) { PianoLayoutType.LAYOUT_21 }
+                pianoLayout = PianoLayouts.getLayout(layoutType)
+                startForegroundNotification()
+                startCalibration()
+            }
+            ACTION_STOP_CALIBRATION -> {
+                stopCalibration()
+                stopSelf()
+            }
+        }
+        return START_NOT_STICKY
+    }
+
+    override fun onDestroy() {
+        super.onDestroy()
+        stopCalibration()
+        instance = null
+        scope.cancel()
+    }
+
+    private fun startForegroundNotification() {
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+            val channel = NotificationChannel(CHANNEL_ID, "坐标标定", NotificationManager.IMPORTANCE_LOW)
+            val nm = getSystemService(NotificationManager::class.java)
+            nm.createNotificationChannel(channel)
+            val notification = NotificationCompat.Builder(this, CHANNEL_ID)
+                .setContentTitle("坐标标定中 - ${layoutType.label}")
+                .setContentText("拖动标记调整琴键位置")
+                .setSmallIcon(R.mipmap.ic_launcher)
+                .setOngoing(true)
+                .build()
+            startForeground(NOTIFICATION_ID, notification)
+        }
+    }
+
+    // ==================== 悬浮标定窗口 ====================
+
+    private fun startCalibration() {
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M && !Settings.canDrawOverlays(this)) {
+            Log.e(TAG, "No overlay permission")
+            stopSelf()
+            return
+        }
+        initDefaultMarkers()
+        createFloatingView()
+        createOverlayView()
+    }
+
+    private fun stopCalibration() {
+        removeAllViews()
+    }
+
+    /** 初始化默认标记位置（均匀分布） */
+    private fun initDefaultMarkers() {
+        markers.clear()
+        val dm = resources.displayMetrics
+        val screenW = dm.widthPixels
+        val screenH = dm.heightPixels
+
+        // 默认键盘区域：屏幕下方2/3区域
+        val keyboardTop = screenH * 0.35f
+        val keyboardBottom = screenH * 0.88f
+        val keyboardLeft = screenW * 0.05f
+        val keyboardRight = screenW * 0.95f
+
+        val orderedKeys = pianoLayout.getOrderedKeys()
+        val keysPerRow = orderedKeys.size / pianoLayout.rows
+
+        orderedKeys.forEachIndexed { index, key ->
+            val row = key.row
+            val col = key.col
+            val rowHeight = (keyboardBottom - keyboardTop) / pianoLayout.rows
+            val keyWidth = (keyboardRight - keyboardLeft) / keysPerRow
+
+            // row 0=下排(bottom), row 2=上排(top)
+            val y = keyboardBottom - rowHeight * (row + 0.5f)
+            val x = keyboardLeft + keyWidth * (col + 0.5f)
+
+            markers.add(KeyMarker(index, x, y, key.label))
+        }
+
+        selectedMarkerIndex = -1
+    }
+
+    private fun createFloatingView() {
+        windowManager = getSystemService(WINDOW_SERVICE) as WindowManager
+        val dm = resources.displayMetrics
+
+        val lp = WindowManager.LayoutParams().apply {
+            type = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+                WindowManager.LayoutParams.TYPE_APPLICATION_OVERLAY
+            } else {
+                @Suppress("DEPRECATION") WindowManager.LayoutParams.TYPE_PHONE
+            }
+            flags = WindowManager.LayoutParams.FLAG_NOT_TOUCH_MODAL or
+                    WindowManager.LayoutParams.FLAG_LAYOUT_IN_SCREEN
+            format = PixelFormat.TRANSLUCENT
+            width = WindowManager.LayoutParams.WRAP_CONTENT
+            height = WindowManager.LayoutParams.WRAP_CONTENT
+            gravity = Gravity.BOTTOM or Gravity.CENTER_HORIZONTAL
+            y = dpToPx(60)
+        }
+
+        floatingView = LayoutInflater.from(this).inflate(R.layout.floating_calibration_view, null)
+
+        tvStep = floatingView?.findViewById(R.id.tvStep)
+        val btnReset = floatingView?.findViewById<LinearLayout>(R.id.btnCalibrate)
+        val btnFinish = floatingView?.findViewById<LinearLayout>(R.id.btnFinish)
+        val btnCancel = floatingView?.findViewById<LinearLayout>(R.id.btnCancel)
+        val dragHandle = floatingView?.findViewById<LinearLayout>(R.id.dragHandle)
+
+        updatePanelUI()
+
+        // 布局切换：在面板中加入三个布局按钮
+        addLayoutSwitchButtons()
+
+        // 重置按钮
+        btnReset?.setOnClickListener {
+            initDefaultMarkers()
+            createOverlayView()
+            Toast.makeText(this, "标记已重置", Toast.LENGTH_SHORT).show()
+        }
+        val btnResetText = floatingView?.findViewById<TextView>(R.id.btn_calibrate_text)
+        btnResetText?.text = "重置"
+
+        // 完成按钮
+        btnFinish?.setOnClickListener { finishCalibration() }
+
+        // 取消按钮
+        btnCancel?.setOnClickListener {
+            stopCalibration()
+            stopSelf()
+        }
+
+        // 拖动控制面板
+        var dragStartX = 0; var dragStartTouchX = 0f
+        dragHandle?.setOnTouchListener { _, event ->
+            when (event.action) {
+                android.view.MotionEvent.ACTION_DOWN -> {
+                    dragStartX = lp.x; dragStartTouchX = event.rawX
+                    true
+                }
+                android.view.MotionEvent.ACTION_MOVE -> {
+                    lp.x = dragStartX + (event.rawX - dragStartTouchX).toInt()
+                    floatingView?.let { windowManager?.updateViewLayout(it, lp) }
+                    true
+                }
+                else -> false
+            }
+        }
+
+        windowManager?.addView(floatingView, lp)
+    }
+
+    /** 创建覆盖层：半透明 + 可拖动标记 */
+    private fun createOverlayView() {
+        // 移除旧覆盖层
+        removeOverlay()
+
+        val dm = resources.displayMetrics
+        val overlayLp = WindowManager.LayoutParams().apply {
+            type = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+                WindowManager.LayoutParams.TYPE_APPLICATION_OVERLAY
+            } else {
+                @Suppress("DEPRECATION") WindowManager.LayoutParams.TYPE_PHONE
+            }
+            flags = WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE or
+                    WindowManager.LayoutParams.FLAG_LAYOUT_IN_SCREEN or
+                    WindowManager.LayoutParams.FLAG_LAYOUT_NO_LIMITS
+            format = PixelFormat.TRANSLUCENT
+            width = dm.widthPixels
+            height = dm.heightPixels
+            gravity = Gravity.TOP or Gravity.START
+        }
+
+        overlayView = CalibrationOverlayView(this).apply {
+            setMarkers(markers.toList())
+            onMarkerDrag = { index, x, y ->
+                if (index in markers.indices) {
+                    markers[index] = markers[index].copy(x = x, y = y)
+                    updatePanelUI()
+                }
+            }
+            onMarkerSelect = { index ->
+                selectedMarkerIndex = index
+                updatePanelUI()
+            }
+        }
+
+        windowManager?.addView(overlayView, overlayLp)
+
+        // 重新提升控制面板到覆盖层之上
+        floatingView?.let { fv ->
+            try { windowManager?.removeView(fv) } catch (_: Exception) {}
+            windowManager?.addView(fv, floatingView?.let {
+                // 重新获取当前的 layoutParams
+                val currentLp = WindowManager.LayoutParams().apply {
+                    copyFrom(it.layoutParams as WindowManager.LayoutParams)
+                    // 提升 z-order: 设置更高的优先级
+                    flags = flags and WindowManager.LayoutParams.FLAG_NOT_TOUCH_MODAL.inv()
+                    flags = flags or WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE
+                }
+                currentLp
+            } ?: return)
+        }
+    }
+
+    private fun removeOverlay() {
+        try {
+            overlayView?.let { windowManager?.removeView(it) }
+        } catch (_: Exception) {}
+        overlayView = null
+    }
+
+    private fun removeAllViews() {
+        removeOverlay()
+        try {
+            floatingView?.let { windowManager?.removeView(it) }
+        } catch (_: Exception) {}
+        floatingView = null
+    }
+
+    /** 在控制面板中添加布局切换按钮 */
+    private fun addLayoutSwitchButtons() {
+        val panel = floatingView?.findViewById<LinearLayout>(R.id.rootLayout) ?: return
+        // 找到步骤提示 textview，在其下方插入布局按钮行
+        val stepIdx = (0 until panel.childCount).firstOrNull {
+            panel.getChildAt(it).id == R.id.tvStep
+        } ?: return
+
+        val btnRow = LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+            layoutParams = LinearLayout.LayoutParams(
+                LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT
+            ).apply { bottomMargin = dpToPx(8) }
+            gravity = android.view.Gravity.CENTER
+        }
+
+        PianoLayoutType.entries.forEach { type ->
+            val btn = TextView(this).apply {
+                text = when (type) {
+                    PianoLayoutType.LAYOUT_21 -> "21键"
+                    PianoLayoutType.LAYOUT_36 -> "36键"
+                    PianoLayoutType.LAYOUT_15 -> "15键"
+                }
+                textSize = 11f
+                setPadding(dpToPx(8), dpToPx(4), dpToPx(8), dpToPx(4))
+                gravity = android.view.Gravity.CENTER
+                layoutParams = LinearLayout.LayoutParams(
+                    0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f
+                )
+                setOnClickListener {
+                    layoutType = type
+                    pianoLayout = PianoLayouts.getLayout(type)
+                    totalKeys = when (type) {
+                        PianoLayoutType.LAYOUT_21 -> 21
+                        PianoLayoutType.LAYOUT_36 -> 36
+                        PianoLayoutType.LAYOUT_15 -> 15
+                    }
+                    initDefaultMarkers()
+                    createOverlayView()
+                    updatePanelUI()
+                    updateLayoutButtons(btnRow)
+                    // 更新通知标题
+                    startForegroundNotification()
+                    Toast.makeText(this@FloatingCalibrationService, "已切换到${type.label}", Toast.LENGTH_SHORT).show()
+                }
+            }
+            btnRow.addView(btn)
+        }
+
+        panel.addView(btnRow, stepIdx + 1)
+        updateLayoutButtons(btnRow)
+    }
+
+    private fun updateLayoutButtons(row: LinearLayout) {
+        for (i in 0 until row.childCount) {
+            val btn = row.getChildAt(i) as? TextView ?: continue
+            val type = PianoLayoutType.entries.getOrNull(i)
+            val isActive = type == layoutType
+            btn.setBackgroundResource(if (isActive) R.drawable.btn_speed_active_bg else R.drawable.btn_speed_bg)
+            btn.setTextColor(if (isActive) 0xFFFFFFFF.toInt() else 0x80FFFFFF.toInt())
+        }
+    }
+
+    private fun updatePanelUI() {
+        val sel = if (selectedMarkerIndex in markers.indices) markers[selectedMarkerIndex] else null
+        tvStep?.text = if (sel != null) {
+            "选中: ${sel.label} (${sel.x.toInt()},${sel.y.toInt()})  拖动标记到琴键上"
+        } else {
+            "${layoutType.label} | ${markers.size}键 | 点击标记可拖动"
+        }
+    }
+
+    // ==================== 保存 ====================
+
+    private fun finishCalibration() {
+        val coordinates = markers.mapIndexed { index, marker ->
+            val key = pianoLayout.getOrderedKeys().getOrNull(index)
+            PianoKeyCoordinate(
+                keyIndex = index,
+                noteNumber = key?.midiNote ?: (48 + index),
+                centerX = marker.x.toInt(),
+                centerY = marker.y.toInt(),
+                width = dpToPx(30),
+                height = dpToPx(40)
+            )
+        }
+
+        Log.d(TAG, "Saving ${coordinates.size} key coordinates for ${pianoLayout.type.label}")
+
+        scope.launch {
+            try {
+                val app = SupportedApps.findByPackage(currentAppPackage) ?: SupportedApps.getDefault()
+                val repository = CoordinateRepository(applicationContext)
+                val dm = resources.displayMetrics
+
+                val entity = CoordinateEntity(
+                    deviceId = repository.generateDeviceId(currentAppPackage, dm.widthPixels, dm.heightPixels),
+                    packageName = currentAppPackage,
+                    appName = app.appName,
+                    screenWidth = dm.widthPixels,
+                    screenHeight = dm.heightPixels,
+                    keyCount = totalKeys,
+                    calibrationMode = "DRAG_MARKERS",
+                    keyCoordinates = Gson().toJson(coordinates)
+                )
+
+                repository.saveCoordinate(entity)
+
+                withContext(Dispatchers.Main) {
+                    Toast.makeText(applicationContext,
+                        "标定完成！${totalKeys}键已保存 (${pianoLayout.type.label})",
+                        Toast.LENGTH_LONG).show()
+                }
+
+                delay(1200)
+                withContext(Dispatchers.Main) {
+                    FloatingPlayerService.start(applicationContext, currentAppPackage)
+                }
+            } catch (e: Exception) {
+                Log.e(TAG, "Save failed", e)
+                withContext(Dispatchers.Main) {
+                    Toast.makeText(applicationContext, "保存失败: ${e.message}", Toast.LENGTH_LONG).show()
+                }
+            } finally {
+                stopCalibration()
+                stopSelf()
+            }
+        }
+    }
+
+    private fun dpToPx(dp: Int): Int = (dp * resources.displayMetrics.density).toInt()
+}
+
+/**
+ * 自定义覆盖层View — 绘制可拖动标记
+ */
+class CalibrationOverlayView(context: Context) : View(context) {
+
+    private val paintMarker = android.graphics.Paint().apply {
+        color = Color.parseColor("#E06C5CE7")
+        style = android.graphics.Paint.Style.FILL
+        isAntiAlias = true
+    }
+    private val paintMarkerStroke = android.graphics.Paint().apply {
+        color = Color.parseColor("#FFA29BFE")
+        style = android.graphics.Paint.Style.STROKE
+        strokeWidth = 3f
+        isAntiAlias = true
+    }
+    private val paintSelected = android.graphics.Paint().apply {
+        color = Color.parseColor("#FF00CEC9")
+        style = android.graphics.Paint.Style.STROKE
+        strokeWidth = 5f
+        isAntiAlias = true
+    }
+    private val paintText = android.graphics.Paint().apply {
+        color = Color.WHITE
+        textSize = 22f
+        isAntiAlias = true
+        textAlign = android.graphics.Paint.Align.CENTER
+    }
+    private val paintLine = android.graphics.Paint().apply {
+        color = Color.parseColor("#306C5CE7")
+        strokeWidth = 1.5f
+        isAntiAlias = true
+    }
+
+    private var markers: List<FloatingCalibrationService.KeyMarker> = emptyList()
+    private var selectedIndex = -1
+    private var markerRadius = 30f
+
+    var onMarkerDrag: ((Int, Float, Float) -> Unit)? = null
+    var onMarkerSelect: ((Int) -> Unit)? = null
+
+    private var dragging = false
+    private var dragIndex = -1
+    private var dragOffsetX = 0f
+    private var dragOffsetY = 0f
+
+    fun setMarkers(list: List<FloatingCalibrationService.KeyMarker>) {
+        markers = list
+        invalidate()
+    }
+
+    override fun onDraw(canvas: android.graphics.Canvas) {
+        super.onDraw(canvas)
+        canvas.drawColor(Color.parseColor("#10000000"))
+
+        // 绘制行连接线
+        for (row in 0..2) {
+            val rowMarkers = markers.filter { it.keyIndex / (markers.size / 3.coerceAtLeast(1)) == row }
+            if (rowMarkers.size >= 2) {
+                for (i in 0 until rowMarkers.size - 1) {
+                    canvas.drawLine(
+                        rowMarkers[i].x, rowMarkers[i].y,
+                        rowMarkers[i + 1].x, rowMarkers[i + 1].y,
+                        paintLine
+                    )
+                }
+            }
+        }
+
+        // 绘制标记
+        markers.forEachIndexed { index, marker ->
+            val radius = if (index == selectedIndex) markerRadius + 6f else markerRadius
+            canvas.drawCircle(marker.x, marker.y, radius, paintMarker)
+            canvas.drawCircle(marker.x, marker.y, radius, paintMarkerStroke)
+            if (index == selectedIndex) {
+                canvas.drawCircle(marker.x, marker.y, radius + 4f, paintSelected)
+            }
+            // 标签
+            canvas.drawText(marker.label, marker.x, marker.y - radius - 8f, paintText)
+        }
+
+        // 提示文字
+        val hintPaint = android.graphics.Paint().apply {
+            color = Color.parseColor("#80FFFFFF")
+            textSize = 36f
+            isAntiAlias = true
+            textAlign = android.graphics.Paint.Align.CENTER
+        }
+        canvas.drawText("拖动标记到对应琴键上", width / 2f, height * 0.15f, hintPaint)
+    }
+
+    override fun onTouchEvent(event: android.view.MotionEvent): Boolean {
+        val x = event.x
+        val y = event.y
+
+        when (event.action) {
+            android.view.MotionEvent.ACTION_DOWN -> {
+                // 查找被点击的标记
+                for (i in markers.indices.reversed()) {
+                    val dist = kotlin.math.sqrt(
+                        ((x - markers[i].x) * (x - markers[i].x) + (y - markers[i].y) * (y - markers[i].y)).toDouble()
+                    )
+                    if (dist < markerRadius + 20f) {
+                        dragIndex = i
+                        dragOffsetX = markers[i].x - x
+                        dragOffsetY = markers[i].y - y
+                        selectedIndex = i
+                        onMarkerSelect?.invoke(i)
+                        dragging = true
+                        invalidate()
+                        return true
+                    }
+                }
+                // 点击空白处取消选择
+                selectedIndex = -1
+                onMarkerSelect?.invoke(-1)
+                invalidate()
+            }
+            android.view.MotionEvent.ACTION_MOVE -> {
+                if (dragging && dragIndex in markers.indices) {
+                    onMarkerDrag?.invoke(dragIndex, x + dragOffsetX, y + dragOffsetY)
+                    val m = markers[dragIndex]
+                    markers = markers.toMutableList().apply {
+                        set(dragIndex, m.copy(x = x + dragOffsetX, y = y + dragOffsetY))
+                    }
+                    invalidate()
+                }
+            }
+            android.view.MotionEvent.ACTION_UP, android.view.MotionEvent.ACTION_CANCEL -> {
+                dragging = false
+                dragIndex = -1
+            }
+        }
+        return true
+    }
+}

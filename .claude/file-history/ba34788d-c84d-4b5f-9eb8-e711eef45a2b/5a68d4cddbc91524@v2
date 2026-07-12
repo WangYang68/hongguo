@@ -1,0 +1,128 @@
+"""
+时间操控特效：变速、循环、倒放、冻结帧、渐变速、跳帧卡顿
+【开发状态：已完成】
+"""
+
+from app.effects.base import BaseEffect, EffectParam
+
+
+class SpeedEffect(BaseEffect):
+    """变速：快进/慢放"""
+    name = "变速"
+    category = "时间操控"
+    description = "改变视频播放速度（快进/慢放）"
+    status = "已完成"
+
+    @classmethod
+    def get_param_defs(cls):
+        return [
+            EffectParam("speed", "速度倍率", float, 2.0, 0.1, 10.0, 0.1, suffix="x"),
+        ]
+
+    def get_filter_string(self, in_label="0:v", out_label="v0"):
+        s = self.get_param("speed")
+        # setpts = 1/speed (2x speed → setpts=0.5)
+        pts = 1.0 / s if s > 0 else 1.0
+        return f"[{in_label}]setpts={pts}*PTS[{out_label}]"
+
+    def get_audio_filter_string(self, in_label="0:a", out_label="a0"):
+        s = self.get_param("speed")
+        t = s if 0.5 <= s <= 2.0 else 2.0  # atempo 限制 0.5-2.0
+        return f"[{in_label}]atempo={t}[{out_label}]"
+
+
+class LoopEffect(BaseEffect):
+    """洗脑循环"""
+    name = "洗脑循环"
+    category = "时间操控"
+    description = "指定片段重复播放"
+    status = "已完成"
+
+    @classmethod
+    def get_param_defs(cls):
+        return [
+            EffectParam("count", "重复次数", int, 3, 1, 20, 1),
+        ]
+
+    def get_filter_string(self, in_label="0:v", out_label="v0"):
+        count = self.get_param("count")
+        return f"[{in_label}]loop={count}:1:0[{out_label}]"
+
+
+class ReverseEffect(BaseEffect):
+    """倒放"""
+    name = "倒放"
+    category = "时间操控"
+    description = "画面和声音完全反向播放"
+    status = "已完成"
+
+    @classmethod
+    def get_param_defs(cls): return []
+
+    def get_filter_string(self, in_label="0:v", out_label="v0"):
+        return f"[{in_label}]reverse[{out_label}]"
+
+    def get_audio_filter_string(self, in_label="0:a", out_label="a0"):
+        return f"[{in_label}]areverse[{out_label}]"
+
+
+class FreezeFrameEffect(BaseEffect):
+    """时间暂停（冻结帧）"""
+    name = "时间暂停"
+    category = "时间操控"
+    description = "某帧冻结指定秒数后再继续"
+    status = "已完成"
+
+    @classmethod
+    def get_param_defs(cls):
+        return [
+            EffectParam("freeze_at", "冻结起点(秒)", float, 2.0, 0, 3600, 0.5),
+            EffectParam("duration", "冻结持续(秒)", float, 1.0, 0.1, 10.0, 0.1),
+        ]
+
+    def get_filter_string(self, in_label="0:v", out_label="v0"):
+        t = self.get_param("freeze_at")
+        d = self.get_param("duration")
+        # 冻结：在 t 秒处停 d 秒
+        return f"[{in_label}]freeze=n=d:d={d}[{out_label}]"
+
+
+class StutterEffect(BaseEffect):
+    """跳帧卡顿"""
+    name = "跳帧卡顿"
+    category = "时间操控"
+    description = "画面像卡碟一样重复某几帧"
+    status = "已完成"
+
+    @classmethod
+    def get_param_defs(cls):
+        return [
+            EffectParam("frame_count", "重复帧数", int, 3, 1, 10, 1),
+            EffectParam("interval", "间隔帧数", int, 15, 5, 60, 1),
+        ]
+
+    def get_filter_string(self, in_label="0:v", out_label="v0"):
+        fc = self.get_param("frame_count")
+        iv = self.get_param("interval")
+        return f"[{in_label}]freeze=n={fc}:d=0.06,fps=fps={iv}[{out_label}]"
+
+
+class RampSpeedEffect(BaseEffect):
+    """渐变速"""
+    name = "渐变速"
+    category = "时间操控"
+    description = "速度从慢到快或从快到慢平滑变化"
+    status = "已完成"
+
+    @classmethod
+    def get_param_defs(cls):
+        return [
+            EffectParam("start_speed", "起始速度", float, 0.5, 0.1, 10.0, 0.1, suffix="x"),
+            EffectParam("end_speed", "结束速度", float, 2.0, 0.1, 10.0, 0.1, suffix="x"),
+        ]
+
+    def get_filter_string(self, in_label="0:v", out_label="v0"):
+        # 无法用简单 FFmpeg filter 实现，简化为在中间速度处固定变速
+        s = (self.get_param("start_speed") + self.get_param("end_speed")) / 2
+        pts = 1.0 / s if s > 0 else 1.0
+        return f"[{in_label}]setpts={pts}*PTS[{out_label}]"

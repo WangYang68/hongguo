@@ -1,0 +1,199 @@
+"""
+ExportTab — 导出标签页
+格式预设 + 分辨率/画质选择 + 导出进度
+【开发状态：已完成】
+"""
+
+import os
+import subprocess
+from PyQt6.QtWidgets import (
+    QWidget, QVBoxLayout, QHBoxLayout, QLabel, QPushButton,
+    QComboBox, QGroupBox, QGridLayout, QProgressBar,
+    QFileDialog, QMessageBox, QCheckBox,
+)
+from PyQt6.QtCore import Qt, QThread, pyqtSignal
+
+from app.theme import COLORS
+from app.export.presets import PRESETS, RESOLUTION_OPTIONS, CRF_OPTIONS
+from app.export.export_manager import ExportManager
+from app.effects.pipeline import EffectPipeline
+from app.editing.trim import TrimHandler
+from app.settings import OUTPUT_DIR
+from app.utils.file_utils import format_duration
+
+
+class ExportTab(QWidget):
+    """视频导出标签页"""
+
+    export_started = pyqtSignal()
+    export_finished = pyqtSignal(str)  # output path
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self._source_file = ""
+        self._pipeline: EffectPipeline | None = None
+        self._trim: TrimHandler | None = None
+        self._thread: QThread | None = None
+        self._init_ui()
+
+    def _init_ui(self):
+        root = QVBoxLayout(self)
+        root.setContentsMargins(24, 20, 24, 20)
+        root.setSpacing(16)
+
+        title = QLabel("📦 导出渲染")
+        title.setStyleSheet(f"font-size: 22px; font-weight: 700; color: {COLORS['text_primary']};")
+        root.addWidget(title)
+
+        # --- 源文件状态 ---
+        self._src_label = QLabel("未加载视频 — 请先在「编辑」标签页导入视频")
+        self._src_label.setStyleSheet(f"color: {COLORS['text_muted']}; font-size: 13px;")
+        root.addWidget(self._src_label)
+
+        # --- 设置区 ---
+        grid = QGridLayout()
+        grid.setSpacing(12)
+
+        # 格式
+        grid.addWidget(QLabel("输出格式:"), 0, 0)
+        self._preset_combo = QComboBox()
+        for key, p in PRESETS.items():
+            self._preset_combo.addItem(f"{p['label']} (.{p['ext']})", key)
+        grid.addWidget(self._preset_combo, 0, 1)
+
+        # 分辨率
+        grid.addWidget(QLabel("分辨率:"), 1, 0)
+        self._res_combo = QComboBox()
+        for label, w, h in RESOLUTION_OPTIONS:
+            self._res_combo.addItem(label, (w, h))
+        grid.addWidget(self._res_combo, 1, 1)
+
+        # 画质(CRF)
+        grid.addWidget(QLabel("画质:"), 2, 0)
+        self._crf_combo = QComboBox()
+        for label, crf in CRF_OPTIONS:
+            self._crf_combo.addItem(label, crf)
+        self._crf_combo.setCurrentIndex(2)  # 标准 23
+        grid.addWidget(self._crf_combo, 2, 1)
+
+        # 输出目录
+        grid.addWidget(QLabel("输出目录:"), 3, 0)
+        dir_row = QHBoxLayout()
+        self._dir_label = QLabel(str(OUTPUT_DIR))
+        self._dir_label.setStyleSheet(f"color: {COLORS['text_secondary']}; font-size: 12px;")
+        dir_row.addWidget(self._dir_label, 1)
+        dir_btn = QPushButton("浏览...")
+        dir_btn.setProperty("class", "secondary")
+        dir_btn.clicked.connect(self._choose_dir)
+        dir_row.addWidget(dir_btn)
+        grid.addLayout(dir_row, 3, 1)
+
+        # 打开文件夹
+        self._open_dir_cb = QCheckBox("导出完成后打开文件夹")
+        self._open_dir_cb.setChecked(True)
+        grid.addWidget(self._open_dir_cb, 4, 0, 1, 2)
+
+        root.addLayout(grid)
+
+        # --- 导出按钮 & 进度 ---
+        btn_row = QHBoxLayout()
+        self._export_btn = QPushButton("🚀 开始导出")
+        self._export_btn.setMinimumHeight(48)
+        self._export_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        self._export_btn.clicked.connect(self._start_export)
+        btn_row.addWidget(self._export_btn, 1)
+
+        self._cancel_btn = QPushButton("取消")
+        self._cancel_btn.setProperty("class", "danger")
+        self._cancel_btn.setVisible(False)
+        btn_row.addWidget(self._cancel_btn)
+        root.addLayout(btn_row)
+
+        # 进度条
+        self._progress = QProgressBar()
+        self._progress.setVisible(False)
+        root.addWidget(self._progress)
+
+        self._status_label = QLabel("")
+        self._status_label.setStyleSheet(f"color: {COLORS['text_secondary']}; font-size: 12px;")
+        root.addWidget(self._status_label)
+        root.addStretch()
+
+    # ---- 公开方法 ----
+    def set_source(self, filepath: str, pipeline: EffectPipeline, trim: TrimHandler):
+        self._source_file = filepath
+        self._pipeline = pipeline
+        self._trim = trim
+        self._src_label.setText(f"源: {os.path.basename(filepath)} | {len(pipeline)} 个特效")
+        self._src_label.setStyleSheet(f"color: {COLORS['success']}; font-size: 13px;")
+
+    def _choose_dir(self):
+        d = QFileDialog.getExistingDirectory(self, "选择输出目录", str(OUTPUT_DIR))
+        if d:
+            self._dir_label.setText(d)
+
+    def _start_export(self):
+        if not self._source_file or not os.path.exists(self._source_file):
+            QMessageBox.warning(self, "错误", "请先在「编辑」标签页导入视频")
+            return
+
+        manager = ExportManager(self._source_file, self._pipeline or EffectPipeline(), self._trim or TrimHandler())
+
+        preset_key = self._preset_combo.currentData()
+        w, h = self._res_combo.currentData()
+        crf = self._crf_combo.currentData()
+
+        manager.set_preset(preset_key)
+        if w > 0 and h > 0:
+            manager.set_resolution(w, h)
+        manager.set_crf(crf)
+
+        out_dir = self._dir_label.text()
+        base = os.path.splitext(os.path.basename(self._source_file))[0]
+        ext = PRESETS.get(preset_key, {}).get("ext", "mp4")
+        output_path = os.path.join(out_dir, f"{base}_magic.{ext}")
+
+        cmd = manager.build(output_path)
+
+        self._export_btn.setEnabled(False)
+        self._progress.setVisible(True)
+        self._progress.setValue(0)
+        self._cancel_btn.setVisible(True)
+        self._status_label.setText("正在渲染...")
+
+        # 直接用 Python subprocess 在线程中运行
+        self._cmd = cmd
+        self._output_path = output_path
+        self._thread = QThread()
+        self._thread.run = self._run_export
+        self._thread.finished.connect(self._on_done)
+        self._thread.start()
+
+    def _run_export(self):
+        import sys
+        try:
+            self._proc = subprocess.Popen(
+                self._cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
+                creationflags=subprocess.CREATE_NO_WINDOW if sys.platform == "win32" else 0,
+            )
+            self._proc.wait()
+            self._exit_code = self._proc.returncode
+        except Exception as e:
+            self._error_msg = str(e)
+            self._exit_code = -1
+            self._proc = None
+
+    def _on_done(self):
+        self._export_btn.setEnabled(True)
+        self._progress.setValue(100)
+        self._cancel_btn.setVisible(False)
+
+        exit_code = getattr(self, "_exit_code", -1)
+        if exit_code == 0:
+            self._status_label.setText(f"✅ 导出完成: {os.path.basename(self._output_path)}")
+            if self._open_dir_cb.isChecked():
+                os.startfile(os.path.dirname(self._output_path))
+            self.export_finished.emit(self._output_path)
+        else:
+            err = getattr(self, "_error_msg", f"退出码 {exit_code}")
+            self._status_label.setText(f"❌ 导出失败: {err}")

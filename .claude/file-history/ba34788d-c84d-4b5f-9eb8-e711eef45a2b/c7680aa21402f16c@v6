@@ -1,0 +1,264 @@
+"""
+VideoPreview — 视频播放器
+基于 QMediaPlayer + QVideoWidget，支持播放/暂停/快进
+若视频编码不支持则显示缩略图+音频播放
+【开发状态：已完成】
+"""
+
+import os
+import subprocess
+import sys
+from PyQt6.QtWidgets import (
+    QWidget, QVBoxLayout, QHBoxLayout, QLabel,
+    QPushButton, QSlider,
+)
+from PyQt6.QtCore import Qt, QUrl, QTimer, pyqtSignal
+from PyQt6.QtMultimedia import QMediaPlayer, QAudioOutput
+from PyQt6.QtMultimediaWidgets import QVideoWidget
+from PyQt6.QtGui import QPixmap, QImage
+
+from app.theme import COLORS
+from app.settings import FFMPEG_PATH
+from app.utils.file_utils import format_duration
+
+
+class VideoPreview(QWidget):
+    """视频播放器 — QMediaPlayer + FFmpeg fallback"""
+
+    duration_loaded = pyqtSignal(float)
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self._filepath = ""
+        self._duration = 0.0
+        self._fps = 30.0
+        self._seeking = False
+        self._video_ok = False
+        self._init_ui()
+        self._init_player()
+        self._init_timer()
+
+    def _init_ui(self):
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.setSpacing(6)
+
+        # 视频画面
+        self._video_widget = QVideoWidget()
+        self._video_widget.setMinimumHeight(300)
+        self._video_widget.setStyleSheet("background-color: #000; border-radius: 8px;")
+        layout.addWidget(self._video_widget, 1)
+
+        # 缩略图 fallback（视频编码不支持时显示）
+        self._thumb_label = QLabel()
+        self._thumb_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self._thumb_label.setMinimumHeight(300)
+        self._thumb_label.setStyleSheet(
+            f"background-color: #000; border-radius: 8px; color: {COLORS['text_muted']}; font-size: 14px;"
+        )
+        self._thumb_label.setVisible(False)
+        layout.addWidget(self._thumb_label, 1)
+        # 缩略图和 videowidget 共享同一位置，用一个 stacked 方式
+        # 简单处理：初始隐藏 thumb
+        self._thumb_label.hide()
+
+        # 控制栏
+        ctrl = QHBoxLayout()
+        ctrl.setSpacing(10)
+
+        self._play_btn = QPushButton("▶")
+        self._play_btn.setFixedSize(40, 40)
+        self._play_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        self._play_btn.clicked.connect(self._toggle_play)
+        self._play_btn.setStyleSheet(f"""
+            QPushButton {{
+                background-color: {COLORS['accent']}; color: #fff;
+                border-radius: 20px; font-size: 18px; font-weight: bold;
+            }}
+            QPushButton:hover {{ background-color: {COLORS['accent_hover']}; }}
+        """)
+        ctrl.addWidget(self._play_btn)
+
+        self._time_label = QLabel("00:00 / 00:00")
+        self._time_label.setStyleSheet(
+            f"color: {COLORS['text_secondary']}; font-size: 13px; font-weight: 500; min-width: 120px;"
+        )
+        ctrl.addWidget(self._time_label)
+
+        self._seek = QSlider(Qt.Orientation.Horizontal)
+        self._seek.setRange(0, 10000)
+        self._seek.sliderPressed.connect(self._seek_press)
+        self._seek.sliderReleased.connect(self._seek_release)
+        self._seek.sliderMoved.connect(self._seek_move)
+        ctrl.addWidget(self._seek, 1)
+
+        layout.addLayout(ctrl)
+
+    def _init_player(self):
+        self._player = QMediaPlayer()
+        self._audio = QAudioOutput()
+        self._player.setAudioOutput(self._audio)
+        self._player.setVideoOutput(self._video_widget)
+        self._player.mediaStatusChanged.connect(self._on_status)
+        self._player.errorOccurred.connect(self._on_player_error)
+        self._player.positionChanged.connect(self._on_position)
+
+    def _init_timer(self):
+        self._timer = QTimer(self)
+        self._timer.setInterval(200)
+        self._timer.timeout.connect(self._refresh)
+
+    # ===== 公开方法 =====
+    def load_video(self, filepath: str):
+        self._filepath = filepath
+        if not os.path.exists(filepath):
+            return
+        self._player.stop()
+        self._timer.stop()
+        self._duration = 0
+        self._video_ok = False
+
+        # 用 ffprobe 获取时长和帧率
+        self._probe(filepath)
+
+        # 加载到 QMediaPlayer
+        url = QUrl.fromLocalFile(os.path.abspath(filepath))
+        self._player.setSource(url)
+        # 不要 play/pause，等 mediaStatusChanged 通知
+
+    def set_position(self, sec: float):
+        self._player.setPosition(int(sec * 1000))
+
+    def get_position(self) -> float:
+        return self._player.position() / 1000.0
+
+    def get_duration(self) -> float:
+        return self._duration
+
+    # ===== 播放控制 =====
+    def _toggle_play(self):
+        if not self._filepath:
+            return
+        if self._player.playbackState() == QMediaPlayer.PlaybackState.PlayingState:
+            self._player.pause()
+            self._play_btn.setText("▶")
+            self._timer.stop()
+        else:
+            if self._player.mediaStatus() == QMediaPlayer.MediaStatus.EndOfMedia:
+                self._player.setPosition(0)
+            self._player.play()
+            self._play_btn.setText("⏸")
+            self._timer.start()
+
+    def _on_status(self, status):
+        if status == QMediaPlayer.MediaStatus.LoadedMedia:
+            dur = self._player.duration()
+            if dur > 0:
+                self._duration = dur / 1000.0
+            elif self._duration == 0:
+                self._duration = self._player.duration() / 1000.0
+            self.duration_loaded.emit(self._duration)
+            self._refresh()
+        elif status == QMediaPlayer.MediaStatus.EndOfMedia:
+            self._timer.stop()
+            self._play_btn.setText("▶")
+        elif status == QMediaPlayer.MediaStatus.InvalidMedia:
+            self._show_thumb()
+
+    def _on_player_error(self, error, msg):
+        self._show_thumb()
+
+    def _show_thumb(self):
+        """视频编码不支持时显示缩略图"""
+        self._video_widget.hide()
+        self._thumb_label.show()
+        # 提取一帧作为封面
+        if self._filepath:
+            pix = self._extract_thumb()
+            if pix:
+                self._thumb_label.setPixmap(pix)
+            else:
+                self._thumb_label.setText("▶ 视频编码不支持\n(可正常播放音频)")
+
+    def _extract_thumb(self) -> QPixmap | None:
+        cmd = [
+            FFMPEG_PATH, "-y", "-ss", "1",
+            "-i", str(self._filepath),
+            "-vframes", "1", "-f", "rawvideo",
+            "-pix_fmt", "rgb24",
+            "-vf", "scale=640:360:force_original_aspect_ratio=decrease",
+            "-",
+        ]
+        try:
+            proc = subprocess.run(
+                cmd, capture_output=True, timeout=10,
+                creationflags=subprocess.CREATE_NO_WINDOW if sys.platform == "win32" else 0,
+            )
+            if proc.returncode == 0 and proc.stdout:
+                # 640x360 rgb24
+                img = QImage(proc.stdout[:640*360*3], 640, 360, 640*3, QImage.Format.Format_RGB888)
+                if not img.isNull():
+                    return QPixmap.fromImage(img)
+        except Exception:
+            pass
+        return None
+
+    def _probe(self, filepath: str):
+        import json
+        cmd = [
+            FFMPEG_PATH.replace("ffmpeg", "ffprobe"), "-v", "quiet",
+            "-print_format", "json", "-show_format", "-show_streams",
+            str(filepath),
+        ]
+        try:
+            proc = subprocess.run(
+                cmd, capture_output=True, encoding="utf-8", errors="replace", timeout=10,
+                creationflags=subprocess.CREATE_NO_WINDOW if sys.platform == "win32" else 0,
+            )
+            if proc.returncode == 0:
+                data = json.loads(proc.stdout)
+                self._duration = float(data.get("format", {}).get("duration", 0))
+                for s in data.get("streams", []):
+                    if s.get("codec_type") == "video":
+                        rfr = s.get("r_frame_rate", "30/1")
+                        if "/" in rfr:
+                            a, b = rfr.split("/")
+                            try: self._fps = float(a)/float(b)
+                            except: pass
+                        break
+        except Exception:
+            pass
+
+    # ===== UI 刷新 =====
+    def _refresh(self):
+        dur = self._player.duration()
+        pos = self._player.position()
+        if dur > 0:
+            self._duration = dur / 1000.0
+        if not self._seeking and self._duration > 0:
+            val = int(pos / max(dur, 1) * 10000)
+            self._seek.blockSignals(True)
+            self._seek.setValue(val)
+            self._seek.blockSignals(False)
+        self._time_label.setText(
+            f"{format_duration(pos/1000)} / {format_duration(max(dur,1)/1000)}"
+        )
+
+    def _on_position(self, pos_ms):
+        pass  # handled by _refresh timer
+
+    # ===== Seek =====
+    def _seek_press(self):
+        self._seeking = True
+
+    def _seek_release(self):
+        self._seeking = False
+        val = self._seek.value()
+        dur = max(self._player.duration(), 1)
+        self._player.setPosition(int(val / 10000.0 * dur))
+
+    def _seek_move(self, val: int):
+        dur = max(self._player.duration(), 1)
+        self._time_label.setText(
+            f"{format_duration(val/10000*dur/1000)} / {format_duration(dur/1000)}"
+        )

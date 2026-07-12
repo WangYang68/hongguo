@@ -1,0 +1,31 @@
+"""
+拼接处理器
+【开发状态：已完成】
+"""
+
+
+class ConcatHandler:
+    """视频拼接"""
+
+    def __init__(self):
+        self._files: list[str] = []
+
+    def add_file(self, path: str):
+        self._files.append(path)
+
+    def remove_file(self, index: int):
+        if 0 <= index < len(self._files):
+            self._files.pop(index)
+
+    def clear(self):
+        self._files.clear()
+
+    def __len__(self):
+        return len(self._files)
+
+    @property
+    def files(self) -> list[str]:
+        return list(self._files)
+
+    def is_active(self) -> bool:
+        return len(self._files) > 1

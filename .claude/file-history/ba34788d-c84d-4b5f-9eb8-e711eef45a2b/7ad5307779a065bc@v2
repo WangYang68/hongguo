@@ -1,0 +1,89 @@
+"""
+模糊/噪点特效：高斯模糊、马赛克、动态模糊、TV雪花、扫描线、胶片颗粒
+【开发状态：已完成】
+"""
+
+from app.effects.base import BaseEffect, EffectParam
+
+
+class GaussianBlurEffect(BaseEffect):
+    """高斯模糊"""
+    name = "高斯模糊"
+    category = "模糊/噪点"
+    description = "整体或局部模糊"
+    status = "已完成"
+    @classmethod
+    def get_param_defs(cls):
+        return [EffectParam("sigma", "模糊强度", float, 5.0, 0.5, 20.0, 0.5)]
+    def get_filter_string(self, in_label="0:v", out_label="v0"):
+        return f"[{in_label}]gblur=sigma={self.get_param('sigma')}[{out_label}]"
+
+
+class MosaicEffect(BaseEffect):
+    """马赛克/像素化"""
+    name = "马赛克"
+    category = "模糊/噪点"
+    description = "分解成大块像素"
+    status = "已完成"
+    @classmethod
+    def get_param_defs(cls):
+        return [EffectParam("block_size", "像素块大小", int, 16, 4, 64, 2)]
+    def get_filter_string(self, in_label="0:v", out_label="v0"):
+        bs = self.get_param("block_size") or 16
+        return f"[{in_label}]scale=iw/{bs}:ih/{bs}:flags=neighbor,scale=iw*{bs}:ih*{bs}:flags=neighbor[{out_label}]"
+
+
+class MotionBlurEffect(BaseEffect):
+    """动态模糊"""
+    name = "动态模糊"
+    category = "模糊/噪点"
+    description = "运动方向拖影效果"
+    status = "已完成"
+    @classmethod
+    def get_param_defs(cls):
+        return [EffectParam("blend", "混合帧数", int, 4, 2, 16, 1)]
+    def get_filter_string(self, in_label="0:v", out_label="v0"):
+        b = self.get_param("blend") or 4
+        return f"[{in_label}]tblend=average,framestep={b}[{out_label}]"
+
+
+class TVStaticEffect(BaseEffect):
+    """老电视雪花"""
+    name = "电视雪花"
+    category = "模糊/噪点"
+    description = "随机噪点模拟老电视雪花"
+    status = "已完成"
+    @classmethod
+    def get_param_defs(cls):
+        return [EffectParam("strength", "雪花强度", int, 15, 1, 50, 1)]
+    def get_filter_string(self, in_label="0:v", out_label="v0"):
+        s = self.get_param("strength") or 15
+        return f"[{in_label}]noise=alls={s}:allf=t+u[{out_label}]"
+
+
+class ScanlinesEffect(BaseEffect):
+    """扫描线"""
+    name = "扫描线"
+    category = "模糊/噪点"
+    description = "CRT 显示器扫描线效果"
+    status = "已完成"
+    @classmethod
+    def get_param_defs(cls):
+        return [EffectParam("spacing", "线间距", int, 4, 2, 16, 1)]
+    def get_filter_string(self, in_label="0:v", out_label="v0"):
+        sp = self.get_param("spacing") or 4
+        return f"[{in_label}]drawgrid=w=iw:h={sp}:thickness={sp//2}:c=black@0.5[{out_label}]"
+
+
+class FilmGrainEffect(BaseEffect):
+    """胶片颗粒"""
+    name = "胶片颗粒"
+    category = "模糊/噪点"
+    description = "老电影胶片颗粒质感"
+    status = "已完成"
+    @classmethod
+    def get_param_defs(cls):
+        return [EffectParam("strength", "颗粒强度", int, 8, 1, 30, 1)]
+    def get_filter_string(self, in_label="0:v", out_label="v0"):
+        s = self.get_param("strength") or 8
+        return f"[{in_label}]noise=alls={s}:allf=t,eq=contrast=1.05[{out_label}]"

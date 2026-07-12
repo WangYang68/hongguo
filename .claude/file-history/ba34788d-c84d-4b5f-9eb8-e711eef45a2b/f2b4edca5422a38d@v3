@@ -1,0 +1,131 @@
+"""
+FFprobeReader — 读取视频元数据
+封装 ffprobe 命令，解析 JSON 输出
+【开发状态：已完成】
+"""
+
+import json
+import subprocess
+import sys
+from pathlib import Path
+from app.settings import FFPROBE_PATH
+
+
+class FFprobeReader:
+    """读取视频文件元数据"""
+
+    def __init__(self, filepath):
+        self.filepath = Path(filepath)
+        self._raw: dict = {}
+        self._analyzed = False
+
+    def analyze(self) -> dict:
+        """运行 ffprobe 并缓存结果"""
+        if self._analyzed:
+            return self._raw
+
+        cmd = [
+            FFPROBE_PATH,
+            "-v", "quiet",
+            "-print_format", "json",
+            "-show_format",
+            "-show_streams",
+            str(self.filepath),
+        ]
+        try:
+            proc = subprocess.run(
+                cmd, capture_output=True,
+                encoding="utf-8", errors="replace",
+                timeout=30,
+                creationflags=subprocess.CREATE_NO_WINDOW if sys.platform == "win32" else 0,
+            )
+            if proc.returncode == 0:
+                self._raw = json.loads(proc.stdout)
+        except (subprocess.TimeoutExpired, json.JSONDecodeError, FileNotFoundError):
+            self._raw = {}
+
+        self._analyzed = True
+        return self._raw
+
+    # ---- 便捷属性 ----
+    @property
+    def format_name(self) -> str:
+        return self._get_format("format_name", "unknown")
+
+    @property
+    def duration(self) -> float:
+        return float(self._get_format("duration", 0))
+
+    @property
+    def bitrate(self) -> int:
+        return int(self._get_format("bit_rate", 0))
+
+    @property
+    def size_bytes(self) -> int:
+        return int(self._get_format("size", 0))
+
+    @property
+    def video_streams(self) -> list[dict]:
+        return [s for s in self._raw.get("streams", []) if s.get("codec_type") == "video"]
+
+    @property
+    def audio_streams(self) -> list[dict]:
+        return [s for s in self._raw.get("streams", []) if s.get("codec_type") == "audio"]
+
+    @property
+    def subtitle_streams(self) -> list[dict]:
+        return [s for s in self._raw.get("streams", []) if s.get("codec_type") == "subtitle"]
+
+    def get_video_info(self) -> dict:
+        """返回最全的视频信息字典"""
+        vid = self.video_streams[0] if self.video_streams else {}
+        return {
+            "filepath": str(self.filepath),
+            "filename": self.filepath.name,
+            "format": self.format_name,
+            "duration": self.duration,
+            "duration_string": self._fmt_duration(self.duration),
+            "bitrate": self.bitrate,
+            "size_bytes": self.size_bytes,
+            "width": vid.get("width", 0),
+            "height": vid.get("height", 0),
+            "fps": self._parse_fps(vid),
+            "vcodec": vid.get("codec_name", "unknown"),
+            "acodec": self.audio_streams[0].get("codec_name", "none") if self.audio_streams else "none",
+            "has_audio": len(self.audio_streams) > 0,
+            "has_subtitle": len(self.subtitle_streams) > 0,
+        }
+
+    # ---- 内部 ----
+    def _get_format(self, key: str, default=None):
+        if not self._analyzed:
+            self.analyze()
+        return self._raw.get("format", {}).get(key, default)
+
+    @staticmethod
+    def _fmt_duration(sec: float) -> str:
+        if not sec:
+            return "00:00"
+        m, s = divmod(int(sec), 60)
+        h, m = divmod(m, 60)
+        return f"{h}:{m:02d}:{s:02d}" if h else f"{m}:{s:02d}"
+
+    @staticmethod
+    def _parse_fps(vid: dict) -> float:
+        """从 ffprobe 输出解析帧率"""
+        # r_frame_rate 格式: "30000/1001"
+        rfr = vid.get("r_frame_rate", "")
+        if "/" in rfr:
+            parts = rfr.split("/")
+            try:
+                return float(parts[0]) / float(parts[1])
+            except (ValueError, ZeroDivisionError):
+                pass
+        avg = vid.get("avg_frame_rate", "")
+        if "/" in avg:
+            parts = avg.split("/")
+            try:
+                return float(parts[0]) / float(parts[1])
+            except (ValueError, ZeroDivisionError):
+                pass
+        return 0.0

@@ -1,0 +1,233 @@
+# MagicVideo 项目实施方案
+
+## 背景
+
+基于用户需求文档，开发一个 Python + FFmpeg + PyQt6 的桌面视频剪辑工具（鬼畜风格），集成现有项目 `backend/` 的视频下载能力，代码放在 `magicvideo/` 目录下。
+
+## 一、项目架构
+
+```
+magicvideo/
+├── main.py                          # 入口，启动 QApplication
+├── requirements.txt
+├── app/
+│   ├── __init__.py
+│   ├── main_window.py               # QMainWindow + QStackedWidget 标签页切换
+│   ├── theme.py                     # 暗色主题 QSS + 配色常量
+│   ├── settings.py                  # 路径配置，FFmpeg 查找，backend 路径注入
+│   │
+│   ├── tabs/
+│   │   ├── download_tab.py          # URL 输入 → 解析 → 格式选择 → 下载
+│   │   ├── edit_tab.py              # 视频预览 + 时间轴 + 裁剪
+│   │   ├── effects_tab.py           # 特效分类树 + 已添加特效列表 + 参数面板
+│   │   └── export_tab.py            # 格式预设 + 分辨率/码率 + 导出
+│   │
+│   ├── widgets/
+│   │   ├── video_preview.py         # QLabel 逐帧预览，播放/暂停，seek bar
+│   │   ├── timeline_widget.py       # 自定义 QWidget 时间轴，裁剪手柄
+│   │   ├── effect_list.py           # QListWidget 拖拽排序，启用/禁用
+│   │   ├── effect_params.py         # 动态生成参数控件（滑块/输入框/复选框）
+│   │   ├── progress_overlay.py      # 半透明进度遮罩
+│   │   ├── url_input.py             # QLineEdit 带粘贴检测和平台图标
+│   │   └── format_selector.py       # 画质选择下拉框
+│   │
+│   ├── download/
+│   │   ├── url_router.py            # classify_url() → douyin/kuaishou/generic
+│   │   └── download_controller.py   # 封装现有 Parser，加 Qt 信号
+│   │
+│   ├── ffmpeg/
+│   │   ├── command_builder.py       # FFmpegCommandBuilder 流式 API ★核心模块
+│   │   ├── probe.py                 # FFprobeReader 元数据提取
+│   │   ├── frame_extractor.py       # FrameExtractor 逐帧提取 → QImage
+│   │   └── progress_parser.py       # 解析 FFmpeg stderr 进度
+│   │
+│   ├── effects/
+│   │   ├── base.py                  # BaseEffect 抽象类 + EffectParam 描述符
+│   │   ├── registry.py              # EffectRegistry 自动注册
+│   │   ├── pipeline.py              # EffectPipeline 特效链 → filter_complex
+│   │   ├── time.py                  # 变速/循环/倒放/冻结帧
+│   │   ├── spatial.py               # 镜像/拉伸/分屏/鱼眼/旋转/缩放抖动
+│   │   ├── color.py                 # 反色/灰度/色相循环/RGB分离
+│   │   ├── blur_noise.py            # 高斯模糊/马赛克/动态模糊/TV雪花/扫描线
+│   │   ├── overlay.py               # 残影/发光/边缘检测/浮雕
+│   │   ├── keying.py                # 绿幕抠像
+│   │   ├── audio.py                 # 音高/回声/机器人/倒放/卡壳/声道摇摆
+│   │   └── combo.py                 # 蒸汽波/CRT故障/鬼畜三连
+│   │
+│   ├── editing/
+│   │   ├── trim.py                  # 裁剪处理器
+│   │   ├── concat.py                # 拼接处理器
+│   │   ├── audio.py                 # 音频替换/提取/混音处理器
+│   │   └── subtitles.py             # 字幕烧录/提取处理器
+│   │
+│   ├── export/
+│   │   ├── export_manager.py        # 验证设置 → 构建命令 → 启动 worker
+│   │   └── presets.py               # 格式预设配置
+│   │
+│   ├── workers/
+│   │   ├── base.py                  # BaseWorker(QObject) 启动/进度/取消/完成
+│   │   ├── download_worker.py       # 下载线程
+│   │   ├── ffmpeg_worker.py         # FFmpeg 子进程线程 + 进度解析
+│   │   └── export_worker.py         # 导出专用线程
+│   │
+│   └── utils/
+│       ├── temp_manager.py          # 会话临时文件管理，退出时自动清理
+│       ├── file_utils.py            # 文件名清理/文件大小格式化
+│       └── system_check.py          # FFmpeg 检测/版本检查
+│
+├── resources/
+│   └── styles/main.qss
+├── downloads/                       # 下载目录
+├── temp/                            # 临时文件（自动清）
+└── output/                          # 导出目录
+```
+
+## 二、核心模块设计
+
+### 2.1 FFmpegCommandBuilder（最重要）
+
+流式 API 构建 FFmpeg 命令，内部存结构化数据，最后 `build()` 生成参数列表：
+
+```python
+cmd = (FFmpegCommandBuilder()
+    .add_input("source.mp4", ss=10, t=5)    # 裁剪10秒起5秒
+    .filter_complex("[0:v]setpts=0.5*PTS[v];[0:a]atempo=2.0[a]")
+    .map("[v]").map("[a]")
+    .vcodec("libx264").crf(23).preset("medium")
+    .resolution(1920, 1080)
+    .faststart()
+    .add_output("output.mp4")
+    .overwrite().progress()
+    .build())
+```
+
+关键方法：`add_input()`、`add_output()`、`filter_complex()`、`map()`、`trim()`、`loop()`、`vcodec()`、`acodec()`、`video_bitrate()`、`resolution()`、`frame_rate()`、`crf()`、`preset()`、`faststart()`、`build()`、`dry_run()`
+
+### 2.2 BaseEffect 体系
+
+```python
+class EffectParam:
+    name: str; label: str; param_type: type
+    default; min_val; max_val; step
+
+class BaseEffect(ABC):
+    name: str; category: str; description: str
+    enabled: bool
+
+    @abstractmethod
+    def get_filter_string(self, in_label="0:v", out_label="v0") -> str
+    def get_audio_filter_string(self, in_label="0:a", out_label="a0") -> str
+    @classmethod
+    def get_param_defs(cls) -> list[EffectParam]
+    def to_dict(self) / from_dict(cls, data)
+```
+
+每个特效一个类，`get_filter_string()` 返回一段 FFmpeg filter_complex 片段。EffectRegistry 自动发现和注册所有特效类。
+
+### 2.3 EffectPipeline
+
+有序特效链，构建合并的 filter_complex：
+
+```
+输入 [0:v]
+  → SpeedEffect(2x):  [0:v]setpts=0.5*PTS[v1]
+  → MirrorEffect:     [v1]hflip[v2]
+  → InvertEffect:     [v2]negate[v3]
+  → GaussianBlur:     [v3]gblur=sigma=5[v4]
+
+filter_complex = "[0:v]setpts=0.5*PTS[v1];[v1]hflip[v2];[v2]negate[v3];[v3]gblur=sigma=5[v4]"
+map = "[v4]"
+```
+
+### 2.4 线程模型
+
+```
+主线程 (GUI)              QThread                    QThread
+    │                       │                          │
+    ├─ DownloadWorker ──────┤                          │
+    │  (网络IO/yt-dlp)       │                          │
+    │                       │                          │
+    ├─ FFmpegWorker ────────┼──────────────────────────┤
+    │  (subprocess Popen)    │                          │
+    │  (stderr 进度解析)      │                          │
+    │                       │                          │
+    └─ ExportWorker ────────┴──────────────────────────┘
+       (继承 FFmpegWorker)
+
+信号: started / finished / progress(int%) / detail_progress(sec, total) / error(str) / message(str)
+取消: worker.cancel() → process.terminate()
+```
+
+### 2.5 复用现有下载模块
+
+通过 `settings.py` 将 `backend/` 加入 `sys.path`，直接 import：
+
+```python
+from downloader import VideoDownloader
+from douyin import DouyinParser, is_douyin_url
+from kuaishou import KuaishouParser, is_kuaishou_url
+```
+
+在 `DownloadWorker.run()` 中调用，通过 Qt 信号返回结果。避免代码拷贝，打包时通过 PyInstaller `--paths` 包含。
+
+## 三、数据流
+
+```
+下载流程:
+  URL 输入 → classify_url() → DouyinParser/KuaishouParser/VideoDownloader
+  → parse() → 视频信息(标题/封面/时长/格式列表) → FormatSelector
+  → 用户选画质 → 点击下载 → download() → {filepath} → ProjectState
+
+编辑流程:
+  本地视频 或 下载视频 → VideoPreview 显示
+  → TimelineWidget 拖拽裁剪手柄 → trim in/out
+  → 特效面板选择特效 → 参数调整 → 预览帧刷新(带特效)
+  → ExportTab 选格式 → ExportWorker.run(FFmpegCommandBuilder)
+  → 进度条 → 完成 → 打开文件
+```
+
+## 四、实施顺序（12个阶段）
+
+| 阶段 | 内容 | 说明 |
+|------|------|------|
+| **P1 骨架** | main.py, MainWindow, theme, settings | 跑通 PyQt6 基础框架 |
+| **P2 FFmpeg 核心** | command_builder, probe, progress_parser | 所有功能依赖此模块 |
+| **P3 工具** | temp_manager, file_utils, system_check | 临时文件和通用工具 |
+| **P4 预览** | frame_extractor, video_preview | 画面显示 |
+| **P5 下载** | download 全部 + download_tab + worker | 核心功能：获取视频 |
+| **P6 编辑** | editing 全部 + edit_tab + timeline | 裁剪/拼接/音频 |
+| **P7 特效基础** | effects/base, registry, pipeline | 特效框架 |
+| **P8 特效实现** | 全部特效类（10个文件） | 鬼畜特效 |
+| **P9 特效预览** | 预览中实时渲染特效 | 边调参数边看效果 |
+| **P10 导出** | export 全部 + export_tab + worker | 导出成品 |
+| **P11 项目I/O** | project_state, project_io | 保存/加载工程 |
+| **P12 打包** | PyInstaller spec | 生成 exe |
+
+## 五、关键技术决策
+
+1. **FFmpeg 调用：** raw `subprocess` + `FFmpegCommandBuilder` 流式 API，不用 `ffmpeg-python`。原因：精细控制 filter graph 标签和流路由，`dry_run()` 便于调试
+2. **视频预览：** 通过 FFmpeg pipe 逐帧提取 RGB 数据 → `numpy` → `QImage` → `QLabel`，不用 QMediaPlayer。原因：QMediaPlayer 需要系统解码器，且无法对帧加特效
+3. **特效链：** 线性 filter_complex 串联，每个特效输出 `[label]` 给下一个。组合特效内部展开为子链
+4. **临时文件：** 尽量用 filter graph 直通，只在必须分步处理时用 `TempFileManager` 管理临时文件，退出自动清理
+5. **下载模块复用：** `sys.path` 注入 `backend/`，直接 import，不拷贝代码
+
+## 六、依赖 (requirements.txt)
+
+```
+PyQt6>=6.7.0
+yt-dlp>=2026.1.0
+requests>=2.31.0
+numpy>=1.26.0
+Pillow>=10.0.0
+static-ffmpeg>=2.0
+python-dotenv>=1.0.0
+```
+
+## 七、验证方式
+
+1. 启动程序 → 显示主窗口，4个标签页
+2. 下载标签：粘贴快手/抖音/YouTube链接 → 解析出视频信息 → 选择画质 → 下载到本地
+3. 编辑标签：导入或使用下载的视频 → 拖动时间轴裁剪
+4. 特效标签：添加变速+镜像+模糊 → 预览帧显示特效效果
+5. 导出标签：选择 MP4 H.264 → 导出 → 生成带特效的视频文件
+6. 关闭程序 → temp 目录自动清理

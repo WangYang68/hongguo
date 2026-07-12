@@ -1,0 +1,54 @@
+{
+  "env": {
+    "ANTHROPIC_BASE_URL": "https://api.deepseek.com/anthropic",
+    "ANTHROPIC_AUTH_TOKEN": "sk-f066048f15fc46f897420940c56df7cf",
+    "ANTHROPIC_MODEL": "deepseek-v4-pro[1m]",
+    "ANTHROPIC_DEFAULT_OPUS_MODEL": "deepseek-v4-pro[1m]",
+    "ANTHROPIC_DEFAULT_SONNET_MODEL": "deepseek-v4-pro[1m]",
+    "ANTHROPIC_DEFAULT_HAIKU_MODEL": "deepseek-v4-flash",
+    "CLAUDE_CODE_SUBAGENT_MODEL": "deepseek-v4-flash",
+    "CLAUDE_CODE_EFFORT_LEVEL": "max"
+  },
+  "permissions": {
+    "allow": [
+      "Bash(python -c ' *)",
+      "Bash(cmd.exe //c \"taskkill /PID 28808 /F\")",
+      "Bash(cat /c/temp/claude/e--free-video-downloader-backend/ba34788d-c84d-4b5f-9eb8-e711eef45a2b/tasks/bzfsz9azw.output 2>/dev/null | tail -10)",
+      "Read(//c/temp/claude/e--free-video-downloader-backend/ba34788d-c84d-4b5f-9eb8-e711eef45a2b/tasks/**)",
+      "Bash(winget install *)",
+      "Bash(reg query *)",
+      "Bash(grep -i \"install\\\\|path\\\\|\\\\\\\\\")",
+      "Bash(dir /s /b \"C:\\\\Program Files*\\\\VideoLAN\\\\VLC\\\\libvlc.dll\")",
+      "Bash(dir /s /b \"D:\\\\Program Files*\\\\VideoLAN\\\\VLC\\\\libvlc.dll\")",
+      "Bash(dir /s /b \"E:\\\\Program Files*\\\\VideoLAN\\\\VLC\\\\libvlc.dll\")",
+      "Bash(where vlc *)",
+      "Bash(cmd //c \"dir /s /b C:\\\\*libvlc.dll 2>nul\")",
+      "Bash(cmd //c \"dir /s /b D:\\\\*libvlc.dll 2>nul\")",
+      "Bash(cmd //c \"dir /s /b E:\\\\*libvlc.dll 2>nul\")",
+      "Bash(where java *)",
+      "Read(//c/Program Files/**)",
+      "Read(//c/Program Files \\(x86\\)/**)",
+      "Read(//c/Program Files/Java/**)",
+      "Bash(\"C:/Program Files \\(x86\\)/Android/android-sdk/platform-tools/adb.exe\" devices)",
+      "Bash(\"C:/Program Files \\(x86\\)/Android/android-sdk/platform-tools/adb.exe\" -s emulator-5554 wait-for-device)",
+      "Bash(\"C:/Program Files \\(x86\\)/Android/android-sdk/platform-tools/adb.exe\" -s emulator-5554 install -r \"e:/PythonProject/AutoPlayer_android/magicpinao/app/build/outputs/apk/debug/app-debug.apk\")",
+      "Bash(\"C:/Program Files \\(x86\\)/Android/android-sdk/platform-tools/adb.exe\" -s emulator-5554 shell am start -n com.example.magicpinao/.MainActivity)",
+      "Bash(\"C:/Program Files \\(x86\\)/Android/android-sdk/platform-tools/adb.exe\" -s emulator-5554 exec-out screencap -p)",
+      "Bash(\"C:/Program Files \\(x86\\)/Android/android-sdk/platform-tools/adb.exe\" -s emulator-5554 logcat -d -t 20)",
+      "Bash(\"C:/Program Files \\(x86\\)/Android/android-sdk/platform-tools/adb.exe\" -s emulator-5554 logcat -d -t 10)",
+      "Bash(\"C:/Program Files \\(x86\\)/Android/android-sdk/platform-tools/adb.exe\" -s emulator-5554 shell dumpsys window windows)",
+      "Bash(\"C:/Program Files \\(x86\\)/Android/android-sdk/platform-tools/adb.exe\" -s emulator-5554 shell \"dumpsys activity activities | grep -E 'mResumedActivity|topResumedActivity'\")",
+      "Bash(\"C:/Program Files \\(x86\\)/Android/android-sdk/platform-tools/adb.exe\" -s emulator-5554 logcat -c)",
+      "Bash(\"C:/Program Files \\(x86\\)/Android/android-sdk/platform-tools/adb.exe\" -s emulator-5554 logcat -d -t 30)",
+      "Bash(\"C:/Program Files \\(x86\\)/Android/android-sdk/platform-tools/adb.exe\" -s emulator-5554 shell \"ping -c 2 8.8.8.8\")",
+      "Bash(\"C:/Program Files \\(x86\\)/Android/android-sdk/platform-tools/adb.exe\" -s emulator-5554 shell \"echo | timeout 5 nc -w 3 smtp.qq.com 465 2>&1 || echo 'Connection timed out or failed'\")",
+      "Bash(\"C:/Program Files \\(x86\\)/Android/android-sdk/platform-tools/adb.exe\" -s emulator-5554 shell am force-stop com.example.magicpinao)",
+      "Bash(\"C:/Program Files \\(x86\\)/Android/android-sdk/platform-tools/adb.exe\" -s emulator-5554 shell \"dumpsys activity activities | grep topResumedActivity\")",
+      "Bash(\"C:/Program Files \\(x86\\)/Android/android-sdk/platform-tools/adb.exe\" -s emulator-5554 logcat -d -s \"AndroidRuntime:E\" -t 10)",
+      "Bash(\"C:/Program Files \\(x86\\)/Android/android-sdk/platform-tools/adb.exe\" -s emulator-5554 logcat -d -s \"AndroidRuntime:E\" -t 5)"
+    ],
+    "additionalDirectories": [
+      "e:\\free-video-downloader\\magicvideo"
+    ]
+  }
+}

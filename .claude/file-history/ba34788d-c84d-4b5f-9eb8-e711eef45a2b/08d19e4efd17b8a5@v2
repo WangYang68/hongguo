@@ -1,0 +1,42 @@
+"""
+BaseWorker — 所有后台工作线程的基类
+【开发状态：已完成】
+"""
+
+from PyQt6.QtCore import QObject, pyqtSignal
+
+
+class BaseWorker(QObject):
+    """
+    后台工作基类。
+    使用方式：
+        thread = QThread()
+        worker = SomeWorker(...)
+        worker.moveToThread(thread)
+        thread.started.connect(worker.run)
+        worker.finished.connect(thread.quit)
+        worker.finished.connect(worker.deleteLater)
+        thread.finished.connect(thread.deleteLater)
+        thread.start()
+    """
+
+    started = pyqtSignal()
+    finished = pyqtSignal()
+    progress = pyqtSignal(int)              # 0-100
+    error = pyqtSignal(str)
+    message = pyqtSignal(str)
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self._cancelled = False
+
+    def cancel(self):
+        """请求取消"""
+        self._cancelled = True
+
+    def is_cancelled(self) -> bool:
+        return self._cancelled
+
+    def run(self):
+        """子类必须实现此方法"""
+        raise NotImplementedError

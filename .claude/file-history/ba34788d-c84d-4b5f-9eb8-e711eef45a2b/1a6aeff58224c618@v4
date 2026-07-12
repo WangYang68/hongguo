@@ -1,0 +1,173 @@
+"""
+MagicVideo 主窗口
+标签页式布局：下载 | 编辑 | 特效 | 导出
+"""
+
+from PyQt6.QtWidgets import (
+    QMainWindow, QWidget, QHBoxLayout, QVBoxLayout,
+    QStackedWidget, QPushButton, QLabel, QStatusBar, QApplication,
+)
+from PyQt6.QtCore import Qt, QSize, pyqtSignal
+from PyQt6.QtGui import QIcon, QFont
+
+from app.theme import COLORS
+from app.settings import DOWNLOADS_DIR, OUTPUT_DIR, TEMP_DIR
+
+# ---------------------------------------------------------------------------
+# 标签页占位 — 逐步替换为真实模块
+# ---------------------------------------------------------------------------
+
+def _placeholder_tab(text: str) -> QWidget:
+    """创建占位标签页，后续替换为真实 Tab"""
+    w = QWidget()
+    layout = QVBoxLayout(w)
+    layout.setAlignment(Qt.AlignmentFlag.AlignCenter)
+    lbl = QLabel(text)
+    lbl.setStyleSheet(f"color: {COLORS['text_muted']}; font-size: 18px;")
+    lbl.setAlignment(Qt.AlignmentFlag.AlignCenter)
+    layout.addWidget(lbl)
+    return w
+
+
+class MainWindow(QMainWindow):
+    """MagicVideo 主窗口"""
+
+    # 供外部监听的信号
+    window_closing = pyqtSignal()
+
+    def __init__(self):
+        super().__init__()
+        self._current_tab_idx = 0
+        self._init_ui()
+        self._connect_signals()
+
+    # ------------------------------------------------------------------
+    # UI 初始化
+    # ------------------------------------------------------------------
+    def _init_ui(self):
+        self.setWindowTitle("MagicVideo — AI 视频剪辑工具（鬼畜风格）")
+        self.setMinimumSize(1200, 780)
+        self.resize(1400, 860)
+
+        # --- 中央区域 ---
+        central = QWidget()
+        self.setCentralWidget(central)
+        root = QVBoxLayout(central)
+        root.setContentsMargins(0, 0, 0, 0)
+        root.setSpacing(0)
+
+        # --- 侧边 Tab 栏（左侧图标式导航）---
+        nav = QWidget()
+        nav.setFixedWidth(88)
+        nav.setStyleSheet(f"background-color: {COLORS['bg_secondary']}; border-right: 1px solid {COLORS['border']};")
+        nav_layout = QVBoxLayout(nav)
+        nav_layout.setContentsMargins(0, 20, 0, 20)
+        nav_layout.setSpacing(8)
+
+        # 标签页按钮
+        self._tab_btns: list[QPushButton] = []
+        tabs = [
+            ("⬇", "下载", "下载视频"),
+            ("✂", "编辑", "裁剪拼接"),
+            ("✦", "特效", "鬼畜特效"),
+            ("📦", "导出", "渲染输出"),
+        ]
+        for icon, label, tooltip in tabs:
+            btn = QPushButton(f"{icon}\n{label}")
+            btn.setToolTip(tooltip)
+            btn.setCheckable(True)
+            btn.setFixedSize(72, 72)
+            btn.setCursor(Qt.CursorShape.PointingHandCursor)
+            btn.setStyleSheet(f"""
+                QPushButton {{
+                    background-color: transparent;
+                    color: {COLORS['text_secondary']};
+                    border: none;
+                    border-radius: 12px;
+                    font-size: 15px;
+                    font-weight: 600;
+                    text-align: center;
+                }}
+                QPushButton:hover {{
+                    background-color: {COLORS['bg_hover']};
+                    color: {COLORS['text_primary']};
+                }}
+                QPushButton:checked {{
+                    background-color: {COLORS['accent_light']};
+                    color: {COLORS['accent']};
+                }}
+            """)
+            nav_layout.addWidget(btn, alignment=Qt.AlignmentFlag.AlignHCenter)
+            self._tab_btns.append(btn)
+
+        nav_layout.addStretch()
+
+        # --- 右侧内容区（QStackedWidget）---
+        self._stack = QStackedWidget()
+        self._stack.setStyleSheet(f"background-color: {COLORS['bg_primary']};")
+
+        # 创建 4 个占位标签页（后续逐步替换）
+        self._pages = [
+            _placeholder_tab("📥 视频下载\n\n粘贴链接，解析并下载视频"),
+            _placeholder_tab("✂ 视频编辑\n\n裁剪 / 拼接 / 音频处理 / 字幕"),
+            _placeholder_tab("✦ 鬼畜特效\n\n变速、倒放、色彩、模糊、绿幕..."),
+            _placeholder_tab("📦 导出渲染\n\n选择格式，一键导出"),
+        ]
+        for p in self._pages:
+            self._stack.addWidget(p)
+
+        # --- 组合布局 ---
+        body = QHBoxLayout()
+        body.setContentsMargins(0, 0, 0, 0)
+        body.setSpacing(0)
+        body.addWidget(nav)
+        body.addWidget(self._stack, 1)
+        root.addLayout(body)
+
+        # --- 状态栏 ---
+        self._status_bar = QStatusBar()
+        self.setStatusBar(self._status_bar)
+        self._status_label = QLabel("就绪")
+        self._status_bar.addWidget(self._status_label)
+
+        # 默认选中第一个标签页
+        self._switch_tab(0)
+
+    def _connect_signals(self):
+        for i, btn in enumerate(self._tab_btns):
+            btn.clicked.connect(lambda checked, idx=i: self._switch_tab(idx))
+
+    # ------------------------------------------------------------------
+    # 标签页切换
+    # ------------------------------------------------------------------
+    def _switch_tab(self, idx: int):
+        self._current_tab_idx = idx
+        self._stack.setCurrentIndex(idx)
+        for i, btn in enumerate(self._tab_btns):
+            btn.setChecked(i == idx)
+
+    # ------------------------------------------------------------------
+    # 公开方法 — 替换占位页为真实模块
+    # ------------------------------------------------------------------
+    def set_tab_widget(self, idx: int, widget: QWidget):
+        """替换指定索引的标签页 widget"""
+        if 0 <= idx < self._stack.count():
+            old = self._stack.widget(idx)
+            self._stack.removeWidget(old)
+            old.deleteLater()
+            self._stack.insertWidget(idx, widget)
+            if idx == self._current_tab_idx:
+                self._stack.setCurrentIndex(idx)
+
+    def set_status(self, text: str, timeout: int = 0):
+        """更新状态栏文字"""
+        self._status_label.setText(text)
+        if timeout > 0:
+            QApplication.instance().processEvents()
+
+    # ------------------------------------------------------------------
+    # 窗口关闭
+    # ------------------------------------------------------------------
+    def closeEvent(self, event):
+        self.window_closing.emit()
+        super().closeEvent(event)

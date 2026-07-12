@@ -1,0 +1,96 @@
+package com.example.magicpinao.core.data
+
+import android.content.Context
+import com.google.gson.Gson
+import com.google.gson.reflect.TypeToken
+import kotlinx.coroutines.flow.Flow
+
+/**
+ * 坐标配置仓库
+ * 统一管理坐标配置的增删改查
+ */
+class CoordinateRepository(private val context: Context) {
+    
+    private val database = AppDatabase.getDatabase(context)
+    private val coordinateDao = database.coordinateDao()
+    private val gson = Gson()
+    
+    /**
+     * 保存坐标配置
+     */
+    suspend fun saveCoordinate(coordinate: CoordinateEntity): Long {
+        return coordinateDao.insertCoordinate(coordinate)
+    }
+    
+    /**
+     * 根据设备ID获取坐标配置
+     */
+    suspend fun getCoordinateByDeviceId(deviceId: String): CoordinateEntity? {
+        return coordinateDao.getCoordinateByDeviceId(deviceId)
+    }
+    
+    /**
+     * 根据包名获取坐标配置
+     */
+    suspend fun getCoordinateByPackage(packageName: String): CoordinateEntity? {
+        return coordinateDao.getCoordinateByPackage(packageName)
+    }
+    
+    /**
+     * 获取所有坐标配置
+     */
+    fun getAllCoordinates(): Flow<List<CoordinateEntity>> {
+        return coordinateDao.getAllCoordinates()
+    }
+    
+    /**
+     * 删除坐标配置
+     */
+    suspend fun deleteCoordinate(coordinate: CoordinateEntity): Int {
+        return coordinateDao.deleteCoordinate(coordinate)
+    }
+    
+    /**
+     * 检查是否存在指定设备的坐标配置
+     */
+    suspend fun hasCoordinateForDevice(deviceId: String): Boolean {
+        return coordinateDao.hasCoordinateForDevice(deviceId)
+    }
+    
+    /**
+     * 检查是否存在指定包名的坐标配置
+     */
+    suspend fun hasCoordinateForPackage(packageName: String): Boolean {
+        return coordinateDao.hasCoordinateForPackage(packageName)
+    }
+
+    suspend fun getSchemesForPackage(packageName: String): List<CoordinateEntity> {
+        return coordinateDao.getSchemesForPackage(packageName)
+    }
+
+    suspend fun deleteSchemeById(id: String) {
+        coordinateDao.deleteCoordinateById(id)
+    }
+
+    /**
+     * 将琴键坐标列表转换为 JSON 字符串
+     */
+    fun keyCoordinatesToJson(coordinates: List<PianoKeyCoordinate>): String {
+        return gson.toJson(coordinates)
+    }
+    
+    /**
+     * 从 JSON 字符串解析琴键坐标列表
+     */
+    fun jsonToKeyCoordinates(json: String): List<PianoKeyCoordinate> {
+        val type = object : TypeToken<List<PianoKeyCoordinate>>() {}.type
+        return gson.fromJson(json, type)
+    }
+    
+    /**
+     * 生成设备ID
+     */
+    fun generateDeviceId(packageName: String, screenWidth: Int, screenHeight: Int): String {
+        return "${packageName}_${screenWidth}x${screenHeight}"
+    }
+}

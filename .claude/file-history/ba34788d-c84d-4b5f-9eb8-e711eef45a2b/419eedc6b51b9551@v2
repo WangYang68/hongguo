@@ -1,0 +1,105 @@
+"""
+UrlInput — 视频链接输入组件
+带粘贴检测、清除按钮、平台识别
+【开发状态：已完成】
+"""
+
+from PyQt6.QtWidgets import QWidget, QHBoxLayout, QLineEdit, QPushButton, QLabel
+from PyQt6.QtCore import Qt, pyqtSignal
+from PyQt6.QtGui import QClipboard
+from app.download.url_router import classify_url, get_platform_label, UrlType
+from app.theme import COLORS
+
+
+class UrlInput(QWidget):
+    """带平台标签的 URL 输入框"""
+
+    parse_requested = pyqtSignal(str)  # url
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self._init_ui()
+
+    def _init_ui(self):
+        layout = QHBoxLayout(self)
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.setSpacing(8)
+
+        # 平台标签
+        self._platform_label = QLabel("🔗")
+        self._platform_label.setFixedWidth(70)
+        self._platform_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self._platform_label.setStyleSheet(f"""
+            QLabel {{
+                background-color: {COLORS['bg_card']};
+                border: 1px solid {COLORS['border']};
+                border-radius: 6px;
+                padding: 6px;
+                font-size: 18px;
+            }}
+        """)
+
+        # 输入框
+        self._input = QLineEdit()
+        self._input.setPlaceholderText("粘贴视频链接（支持抖音/快手/YouTube/B站等 1800+ 平台）...")
+        self._input.setClearButtonEnabled(True)
+        self._input.returnPressed.connect(self._on_parse)
+        self._input.textChanged.connect(self._on_text_changed)
+
+        # 粘贴按钮
+        self._paste_btn = QPushButton("📋 粘贴")
+        self._paste_btn.setProperty("class", "secondary")
+        self._paste_btn.setStyleSheet(f"""
+            QPushButton {{
+                background-color: {COLORS['bg_hover']};
+                color: {COLORS['text_primary']};
+                border: 1px solid {COLORS['border']};
+                border-radius: 6px;
+                padding: 10px 16px;
+                font-size: 13px;
+            }}
+            QPushButton:hover {{
+                background-color: {COLORS['border']};
+            }}
+        """)
+        self._paste_btn.clicked.connect(self._paste_clipboard)
+
+        # 解析按钮
+        self._parse_btn = QPushButton("🔍 解析视频")
+        self._parse_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        self._parse_btn.clicked.connect(self._on_parse)
+
+        layout.addWidget(self._platform_label)
+        layout.addWidget(self._input, 1)
+        layout.addWidget(self._paste_btn)
+        layout.addWidget(self._parse_btn)
+
+    def _on_text_changed(self, text: str):
+        url_type = classify_url(text)
+        labels = {
+            UrlType.DOUYIN: "🎵 抖音",
+            UrlType.KUAISHOU: "📱 快手",
+            UrlType.BILIBILI: "📺 B站",
+            UrlType.YOUTUBE: "▶ YouTube",
+            UrlType.GENERIC: "🌐 通用",
+        }
+        self._platform_label.setText(labels.get(url_type, "🌐 通用"))
+
+    def _paste_clipboard(self):
+        clipboard = QClipboard()
+        text = clipboard.text().strip()
+        if text:
+            self._input.setText(text)
+
+    def _on_parse(self):
+        url = self._input.text().strip()
+        if url:
+            self.parse_requested.emit(url)
+
+    def set_url(self, url: str):
+        self._input.setText(url)
+
+    def set_enabled(self, enabled: bool):
+        self._input.setEnabled(enabled)
+        self._parse_btn.setEnabled(enabled)
+        self._paste_btn.setEnabled(enabled)

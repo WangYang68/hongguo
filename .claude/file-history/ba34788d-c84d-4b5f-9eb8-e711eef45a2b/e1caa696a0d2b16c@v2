@@ -1,0 +1,88 @@
+"""
+DownloadWorker — 后台视频下载线程
+封装现有 backend/ 的下载模块，通过 Qt 信号汇报进度
+【开发状态：已完成】
+"""
+
+from PyQt6.QtCore import pyqtSignal
+
+from app.workers.base import BaseWorker
+from app.download.url_router import classify_url, UrlType
+from app.settings import DOWNLOADS_DIR
+
+
+class DownloadWorker(BaseWorker):
+    """后台视频解析 + 下载"""
+
+    info_parsed = pyqtSignal(dict)           # 视频信息
+    download_progress = pyqtSignal(int, int)  # current_bytes, total_bytes
+    download_complete = pyqtSignal(dict)      # {filepath, filename, title, ext}
+
+    def __init__(self, url: str, format_id: str = "", download_mode: str = "video", parent=None):
+        super().__init__(parent)
+        self.url = url
+        self.format_id = format_id
+        self.download_mode = download_mode  # "video" or "audio" (仅抖音)
+
+    def run(self):
+        try:
+            self.message.emit("正在识别平台...")
+            url_type = classify_url(self.url)
+
+            if url_type == UrlType.DOUYIN:
+                self._douyin_flow()
+            elif url_type == UrlType.KUAISHOU:
+                self._kuaishou_flow()
+            else:
+                self._generic_flow()
+
+            self.finished.emit()
+        except Exception as e:
+            self.error.emit(str(e))
+
+    # ------------------------------------------------------------------
+    def _douyin_flow(self):
+        from douyin import DouyinParser
+        parser = DouyinParser(download_dir=str(DOWNLOADS_DIR))
+        self.message.emit("正在解析抖音视频...")
+        info = parser.parse(self.url)
+        self.info_parsed.emit(info)
+        if self._cancelled:
+            return
+        self.message.emit("正在下载抖音视频...")
+        self.progress.emit(10)
+        result = parser.download(self.url, mode=self.download_mode)
+        self.progress.emit(100)
+        self.download_complete.emit(result)
+
+    def _kuaishou_flow(self):
+        from kuaishou import KuaishouParser
+        parser = KuaishouParser(download_dir=str(DOWNLOADS_DIR))
+        self.message.emit("正在解析快手视频...")
+        info = parser.parse(self.url)
+        self.info_parsed.emit(info)
+        if self._cancelled:
+            return
+        self.message.emit("正在下载快手视频...")
+        self.progress.emit(10)
+        result = parser.download(self.url, mode=self.download_mode)
+        self.progress.emit(100)
+        self.download_complete.emit(result)
+
+    def _generic_flow(self):
+        from downloader import VideoDownloader
+        dl = VideoDownloader()
+        self.message.emit("正在解析视频信息...")
+        info = dl.parse_video(self.url)
+        self.info_parsed.emit(info)
+        if self._cancelled:
+            return
+        if not self.format_id:
+            # 只解析，不下载
+            self.progress.emit(100)
+            return
+        self.message.emit("正在下载视频...")
+        self.progress.emit(10)
+        result = dl.download_video(self.url, self.format_id)
+        self.progress.emit(100)
+        self.download_complete.emit(result)

@@ -1,0 +1,540 @@
+package com.example.magicpinao.ui.viewmodel
+
+import android.app.Application
+import android.util.Log
+import androidx.lifecycle.AndroidViewModel
+import androidx.lifecycle.viewModelScope
+import com.example.magicpinao.core.accessibility.SupportedApps
+import com.example.magicpinao.core.coordinate.CoordinateManager
+import com.example.magicpinao.core.data.CoordinateRepository
+import com.example.magicpinao.core.data.MusicEntity
+import com.example.magicpinao.core.data.MusicRepository
+import com.example.magicpinao.core.midi.MidiParser
+import com.example.magicpinao.core.midi.MidiTestUtils
+import com.example.magicpinao.core.midi.NoteSequence
+import com.example.magicpinao.core.performance.PerformanceScheduler
+import com.example.magicpinao.core.utils.PermissionManager
+import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.launch
+
+/**
+ * 主界面 ViewModel
+ */
+class MainViewModel(application: Application) : AndroidViewModel(application) {
+
+    private val musicRepository = MusicRepository(application)
+    private val coordinateRepository = CoordinateRepository(application)
+    private val permissionManager = PermissionManager(application)
+    private val midiParser = MidiParser()
+    private val coordinateManager = CoordinateManager()
+    private val performanceScheduler = PerformanceScheduler.getOrCreate()
+
+    // UI 状态
+    private val _uiState = MutableStateFlow(MainUiState())
+    val uiState: StateFlow<MainUiState> = _uiState.asStateFlow()
+
+    // 音乐列表
+    private val _musicList = MutableStateFlow<List<MusicEntity>>(emptyList())
+    val musicList: StateFlow<List<MusicEntity>> = _musicList.asStateFlow()
+
+    // 搜索关键词
+    private val _searchQuery = MutableStateFlow("")
+    val searchQuery: StateFlow<String> = _searchQuery.asStateFlow()
+
+    // 选中的标签
+    private val _selectedTag = MutableStateFlow("全部")
+    val selectedTag: StateFlow<String> = _selectedTag.asStateFlow()
+
+    // 可分页
+    private var currentPage = 1
+    private var hasMore = true
+    private val pageSize = 20
+
+    init {
+        // 注入 CoordinateManager 到 PerformanceScheduler（确保使用同一个实例）
+        performanceScheduler.setCoordinateManager(coordinateManager)
+
+        // 初始化时扫描本地 MIDI 文件
+        scanLocalMidiFiles()
+
+        // 加载音乐列表
+        loadMusicList()
+    }
+    
+    /**
+     * 扫描本地 MIDI 文件
+     */
+    fun scanLocalMidiFiles() {
+        viewModelScope.launch {
+            try {
+                val context = getApplication<Application>()
+                
+                // 首先从 assets 复制 MIDI 文件到应用存储目录
+                copyMidiFilesFromAssets(context)
+                
+                // 然后扫描应用存储目录
+                val midiDir = "${context.filesDir.absolutePath}/midi_music"
+                
+                Log.d("MainViewModel", "Scanning MIDI files from: $midiDir")
+                val scannedMusic = musicRepository.scanLocalMidiFiles(midiDir)
+                Log.d("MainViewModel", "Found ${scannedMusic.size} MIDI files")
+                
+                // 同步数据库：删除已不存在的文件记录
+                syncMusicDatabase(midiDir)
+            } catch (e: Exception) {
+                Log.e("MainViewModel", "Error scanning MIDI files", e)
+            }
+        }
+    }
+    
+    /**
+     * 同步音乐数据库（删除不存在的文件）
+     */
+    private suspend fun syncMusicDatabase(midiDir: String) {
+        try {
+            val allMusic = musicRepository.getAllMusic()
+            // 注意：这里需要使用 first() 来获取 Flow 的值
+            // 但由于我们在 viewModelScope 中，可以直接 collect 一次
+            musicRepository.getAllMusic().collect { musicList ->
+                val dir = java.io.File(midiDir)
+                val existingFiles = dir.listFiles()?.map { it.absolutePath } ?: emptyList()
+                
+                // 找出不存在的文件
+                val toDelete = musicList.filter { music ->
+                    !existingFiles.contains(music.filePath)
+                }
+                
+                if (toDelete.isNotEmpty()) {
+                    Log.d("MainViewModel", "Removing ${toDelete.size} outdated music records")
+                    toDelete.forEach { music ->
+                        musicRepository.deleteMusic(music)
+                    }
+                }
+                
+                // 只 collect 一次就取消
+                return@collect
+            }
+        } catch (e: Exception) {
+            Log.e("MainViewModel", "Error syncing music database", e)
+        }
+    }
+    
+    /**
+     * 从 assets 目录复制 MIDI 文件到应用存储
+     */
+    private suspend fun copyMidiFilesFromAssets(context: Application) {
+        try {
+            val assetManager = context.assets
+            val midiDir = java.io.File("${context.filesDir.absolutePath}/midi_music")
+            
+            // 创建目标目录
+            if (!midiDir.exists()) {
+                midiDir.mkdirs()
+            }
+            
+            // 列出 assets 中的 MIDI 文件
+            val assetFiles = assetManager.list("midi_music") ?: emptyArray()
+            
+            var copiedCount = 0
+            for (fileName in assetFiles) {
+                if (fileName.endsWith(".mid") || fileName.endsWith(".midi")) {
+                    val targetFile = java.io.File(midiDir, fileName)
+                    
+                    // 如果文件已存在，跳过（避免重复复制）
+                    if (targetFile.exists()) {
+                        Log.d("MainViewModel", "File already exists: $fileName")
+                        continue
+                    }
+                    
+                    // 复制文件
+                    assetManager.open("midi_music/$fileName").use { inputStream ->
+                        targetFile.outputStream().use { outputStream ->
+                            inputStream.copyTo(outputStream)
+                        }
+                    }
+                    copiedCount++
+                    Log.d("MainViewModel", "Copied: $fileName")
+                }
+            }
+            
+            if (copiedCount > 0) {
+                Log.d("MainViewModel", "Successfully copied $copiedCount MIDI files")
+            }
+        } catch (e: Exception) {
+            Log.e("MainViewModel", "Error copying MIDI files from assets", e)
+        }
+    }
+    
+    /**
+     * 加载音乐列表
+     */
+    private fun loadMusicList() {
+        viewModelScope.launch {
+            musicRepository.getAllMusic().collect { music ->
+                _musicList.value = music
+                Log.d("MainViewModel", "Loaded ${music.size} music items")
+            }
+        }
+    }
+    
+    /**
+     * 搜索音乐
+     */
+    fun searchMusic(query: String) {
+        _searchQuery.value = query
+        currentPage = 1
+
+        viewModelScope.launch {
+            if (query.isBlank() && _selectedTag.value == "全部") {
+                loadMusicList()
+            } else if (query.isBlank()) {
+                musicRepository.searchByTag(_selectedTag.value).collect { _musicList.value = it }
+            } else {
+                musicRepository.searchByTitleOrTag(query).collect { _musicList.value = it }
+            }
+        }
+    }
+
+    /**
+     * 按标签筛选
+     */
+    fun selectTag(tag: String) {
+        _selectedTag.value = tag
+        currentPage = 1
+
+        viewModelScope.launch {
+            if (tag == "全部") {
+                if (_searchQuery.value.isBlank()) {
+                    loadMusicList()
+                } else {
+                    musicRepository.searchByTitle(_searchQuery.value).collect { _musicList.value = it }
+                }
+            } else {
+                musicRepository.searchByTag(tag).collect { _musicList.value = it }
+            }
+        }
+    }
+
+    /**
+     * 加载更多（下拉加载更多）
+     */
+    fun loadMore() {
+        if (!hasMore) return
+        currentPage++
+        viewModelScope.launch {
+            val more = musicRepository.getMusicPaged(currentPage, pageSize)
+            if (more.size < pageSize) hasMore = false
+            _musicList.value = _musicList.value + more
+        }
+    }
+
+    /**
+     * 下拉刷新
+     */
+    fun refresh() {
+        currentPage = 1
+        hasMore = true
+        scanLocalMidiFiles()
+    }
+    
+    /**
+     * 选择目标应用
+     */
+    fun selectTargetApp(packageName: String) {
+        _uiState.value = _uiState.value.copy(
+            selectedAppPackage = packageName,
+            showAppSelector = false
+        )
+        Log.d("MainViewModel", "Selected target app: $packageName")
+    }
+    
+    /**
+     * 显示/隐藏应用选择器
+     */
+    fun toggleAppSelector() {
+        _uiState.value = _uiState.value.copy(
+            showAppSelector = !_uiState.value.showAppSelector
+        )
+    }
+    
+    /**
+     * 检查无障碍服务权限
+     */
+    fun checkAccessibilityPermission(): Boolean {
+        return permissionManager.isAccessibilityServiceEnabled()
+    }
+    
+    /**
+     * 打开无障碍服务设置
+     */
+    fun openAccessibilitySettings() {
+        permissionManager.openAccessibilitySettings()
+    }
+    
+    /**
+     * 打开悬浮窗权限设置
+     */
+    fun openOverlaySettings() {
+        permissionManager.openOverlaySettings()
+    }
+    
+    /**
+     * 检查悬浮窗权限
+     */
+    fun checkOverlayPermission(): Boolean {
+        return permissionManager.hasOverlayPermission()
+    }
+    
+    /**
+     * 播放音乐
+     */
+    fun playMusic(musicId: String) {
+        val packageName = _uiState.value.selectedAppPackage
+        if (packageName.isNullOrBlank()) {
+            // 没有选择目标应用，弹出选择器
+            _uiState.value = _uiState.value.copy(
+                showAppSelector = true,
+                pendingMusicId = musicId
+            )
+            Log.d("MainViewModel", "No target app selected, showing selector")
+            return
+        }
+        playMusic(musicId, packageName)
+    }
+    
+    /**
+     * 检查目标应用是否已打开且有坐标配置（异步）
+     */
+    fun checkAppAndCoordinates(callback: (AppCheckResult) -> Unit) {
+        val packageName = _uiState.value.selectedAppPackage
+        
+        // 检查是否选择了应用
+        if (packageName.isNullOrBlank()) {
+            callback(AppCheckResult.NO_APP_SELECTED)
+            return
+        }
+        
+        // 在协程中检查是否有坐标配置
+        viewModelScope.launch {
+            val hasCoordinates = coordinateRepository.hasCoordinateForPackage(packageName)
+            if (!hasCoordinates) {
+                callback(AppCheckResult.NO_COORDINATES(packageName))
+            } else {
+                callback(AppCheckResult.OK)
+            }
+        }
+    }
+    
+    /**
+     * 开始坐标标定
+     */
+    fun startCalibration(packageName: String) {
+        val app = SupportedApps.findByPackage(packageName) ?: SupportedApps.getDefault()
+        
+        // 检查悬浮窗权限
+        if (!permissionManager.hasOverlayPermission()) {
+            _uiState.value = _uiState.value.copy(
+                showPermissionDialog = true,
+                permissionType = PermissionType.OVERLAY
+            )
+            return
+        }
+        
+        _uiState.value = _uiState.value.copy(
+            isCalibrating = true,
+            calibratingAppPackage = packageName
+        )
+        
+        Log.d("MainViewModel", "Starting calibration for: $packageName")
+    }
+    
+    /**
+     * 完成坐标标定
+     */
+    fun finishCalibration() {
+        _uiState.value = _uiState.value.copy(
+            isCalibrating = false,
+            calibratingAppPackage = null
+        )
+        
+        // 重新加载音乐列表（可能更新了配置）
+        loadMusicList()
+    }
+    
+    /**
+     * 播放音乐（带包名）
+     */
+    private fun playMusic(musicId: String, packageName: String) {
+        viewModelScope.launch {
+            try {
+                // 1. 加载音乐
+                val music = musicRepository.getMusicById(musicId) ?: run {
+                    _uiState.value = _uiState.value.copy(errorMessage = "音乐未找到")
+                    return@launch
+                }
+
+                // 2. 解析MIDI
+                val sequence = midiParser.parseMidiFile(music.filePath)
+                MidiTestUtils.printNoteStatistics(sequence)
+                Log.d("MainViewModel", "MIDI: ${sequence.noteCount} notes, ${sequence.duration}ms, BPM=${sequence.bpm}")
+
+                // 3. 获取坐标
+                val coordEntity = coordinateRepository.getCoordinateByPackage(packageName)
+                if (coordEntity == null) {
+                    _uiState.value = _uiState.value.copy(errorMessage = "请先标定琴键坐标", isPlaying = false)
+                    return@launch
+                }
+                val app = SupportedApps.findByPackage(packageName) ?: SupportedApps.getDefault()
+                val coordList = com.google.gson.Gson().fromJson(
+                    coordEntity.keyCoordinates,
+                    Array<com.example.magicpinao.core.data.PianoKeyCoordinate>::class.java
+                ).toList()
+                coordinateManager.setCoordinates(coordList)
+                Log.d("MainViewModel", "Loaded ${coordList.size} keys, first=(${coordList[0].centerX},${coordList[0].centerY}), last=(${coordList.last().centerX},${coordList.last().centerY})")
+
+                // 4. 无障碍服务检查
+                val service = com.example.magicpinao.core.accessibility.PianoAccessibilityService.instance
+                if (service == null) {
+                    _uiState.value = _uiState.value.copy(errorMessage = "无障碍服务未启动", isPlaying = false)
+                    return@launch
+                }
+
+                // 设置坐标到无障碍服务
+                service.setCoordinates(coordList)
+
+                // 5. 更新UI状态
+                _uiState.value = _uiState.value.copy(
+                    isPlaying = true,
+                    currentMusicId = musicId,
+                    currentMusicTitle = music.title,
+                    errorMessage = null
+                )
+
+                // 6. 先启动悬浮播放器（带完整上下文）
+                com.example.magicpinao.core.accessibility.FloatingPlayerService.stop(getApplication())
+                kotlinx.coroutines.delay(200)
+                com.example.magicpinao.core.accessibility.FloatingPlayerService.start(
+                    getApplication(), packageName, music.title, musicId
+                )
+
+                // 7. 检查目标应用是否已在前台，否则打开并等待
+                val root = service.rootInActiveWindow
+                val fgPkg = root?.packageName?.toString()
+                root?.recycle()
+                if (fgPkg != packageName) {
+                    service.openTargetApp(packageName)
+                    kotlinx.coroutines.delay(1500)
+                } else {
+                    kotlinx.coroutines.delay(300)
+                }
+                Log.d("MainViewModel", "Foreground: $fgPkg, target: $packageName")
+
+                // 8. 调度并开始演奏（使用单例scheduler）
+                performanceScheduler.setCoordinateManager(coordinateManager)
+                performanceScheduler.schedule(sequence, packageName, app.baseNote, app.keyCount, app.whiteKeysOnly)
+                performanceScheduler.start()
+
+                Log.d("MainViewModel", "=== PLAYBACK: ${sequence.noteCount} notes, ${sequence.duration}ms ===")
+
+            } catch (e: Exception) {
+                Log.e("MainViewModel", "Play error", e)
+                _uiState.value = _uiState.value.copy(errorMessage = "播放失败: ${e.message}", isPlaying = false)
+            }
+        }
+    }
+    
+    /**
+     * 暂停播放
+     */
+    fun pausePlayback() {
+        performanceScheduler.pause()
+        _uiState.value = _uiState.value.copy(
+            isPlaying = false
+        )
+    }
+    
+    /**
+     * 恢复播放
+     */
+    fun resumePlayback() {
+        performanceScheduler.resume()
+        _uiState.value = _uiState.value.copy(
+            isPlaying = true
+        )
+    }
+    
+    /**
+     * 停止播放
+     */
+    fun stopPlayback() {
+        performanceScheduler.stop()
+        
+        // 停止悬浮播放器服务
+        com.example.magicpinao.core.accessibility.FloatingPlayerService.stop(getApplication())
+        
+        _uiState.value = _uiState.value.copy(
+            isPlaying = false,
+            currentMusicId = null
+        )
+    }
+    
+    /**
+     * 测试点击（诊断用）
+     */
+    fun testTap(x: Int, y: Int, onResult: (Boolean, String) -> Unit) {
+        val service = com.example.magicpinao.core.accessibility.PianoAccessibilityService.instance
+        if (service == null) {
+            onResult(false, "无障碍服务未连接")
+            return
+        }
+        viewModelScope.launch {
+            val (ok, msg) = service.testTap(x, y)
+            onResult(ok, msg)
+        }
+    }
+
+    /**
+     * 清除错误消息
+     */
+    fun clearError() {
+        _uiState.value = _uiState.value.copy(errorMessage = null)
+    }
+}
+
+/**
+ * UI 状态
+ */
+data class MainUiState(
+    val isLoading: Boolean = false,
+    val isPlaying: Boolean = false,
+    val currentMusicId: String? = null,
+    val currentMusicTitle: String? = null,
+    val errorMessage: String? = null,
+    val showPermissionDialog: Boolean = false,
+    val permissionType: PermissionType = PermissionType.NONE,
+    val selectedAppPackage: String? = null,
+    val showAppSelector: Boolean = false,
+    val pendingMusicId: String? = null,
+    val isCalibrating: Boolean = false,
+    val calibratingAppPackage: String? = null
+)
+
+/**
+ * 应用检查结果
+ */
+sealed class AppCheckResult {
+    object OK : AppCheckResult()
+    object NO_APP_SELECTED : AppCheckResult()
+    data class NO_COORDINATES(val packageName: String) : AppCheckResult()
+}
+
+/**
+ * 权限类型
+ */
+enum class PermissionType {
+    NONE,
+    ACCESSIBILITY,
+    OVERLAY
+}

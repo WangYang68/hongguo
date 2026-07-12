@@ -1,0 +1,36 @@
+"""
+裁剪处理器
+【开发状态：已完成】
+"""
+
+
+class TrimHandler:
+    """视频裁剪配置与 FFmpeg 命令构建"""
+
+    def __init__(self, start_sec: float = 0.0, end_sec: float = 0.0):
+        self.start_sec = start_sec
+        self.end_sec = end_sec  # 0 表示到末尾
+
+    @property
+    def duration(self) -> float:
+        if self.end_sec > 0 and self.start_sec >= 0:
+            return self.end_sec - self.start_sec
+        return 0.0
+
+    def is_active(self) -> bool:
+        return self.start_sec > 0 or self.end_sec > 0
+
+    def apply_to_builder(self, builder, input_idx: int = 0):
+        """将裁剪参数应用到 FFmpegCommandBuilder"""
+        if self.start_sec > 0:
+            builder.trim(start=self.start_sec, input_idx=input_idx)
+        if self.end_sec > 0 and self.start_sec >= 0:
+            builder.trim(duration=self.duration, input_idx=input_idx)
+        return builder
+
+    def to_dict(self) -> dict:
+        return {"start": self.start_sec, "end": self.end_sec}
+
+    @classmethod
+    def from_dict(cls, data: dict) -> "TrimHandler":
+        return cls(data.get("start", 0), data.get("end", 0))

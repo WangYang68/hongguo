@@ -1,0 +1,296 @@
+"""
+EditTab — 视频工作台
+视频播放 + 时间裁剪 + 特效管理 + 拼接，一个界面完成
+【开发状态：已完成】
+"""
+
+import os
+from PyQt6.QtWidgets import (
+    QWidget, QVBoxLayout, QHBoxLayout, QLabel, QPushButton,
+    QGroupBox, QFileDialog, QDoubleSpinBox, QListWidget, QListWidgetItem,
+    QTreeWidget, QTreeWidgetItem, QSplitter, QScrollArea, QSpinBox,
+    QCheckBox, QComboBox,
+)
+from PyQt6.QtCore import Qt, pyqtSignal
+from app.theme import COLORS
+from app.widgets.video_preview import VideoPreview
+from app.editing.trim import TrimHandler
+from app.editing.concat import ConcatHandler
+from app.effects.pipeline import EffectPipeline
+from app.effects.registry import EffectRegistry
+from app.effects.base import EffectParam
+from app.ffmpeg.probe import FFprobeReader
+from app.utils.file_utils import format_duration, format_filesize
+
+
+class EditTab(QWidget):
+    """视频工作台 — 播放 + 编辑 + 特效"""
+
+    source_changed = pyqtSignal(str)
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self._source_file = ""
+        self._trim = TrimHandler()
+        self._concat = ConcatHandler()
+        self._pipeline = EffectPipeline(self)
+        self._pipeline.effects_changed.connect(self._on_pipeline_change)
+        self._init_ui()
+
+    def _init_ui(self):
+        root = QVBoxLayout(self)
+        root.setContentsMargins(16, 12, 16, 12)
+        root.setSpacing(10)
+
+        # === 顶部工具栏 ===
+        toolbar = QHBoxLayout()
+        title = QLabel("🎬 视频工作台")
+        title.setStyleSheet(f"font-size: 20px; font-weight: 700; color: {COLORS['text_primary']};")
+        toolbar.addWidget(title)
+
+        self._open_btn = QPushButton("📂 导入视频")
+        self._open_btn.clicked.connect(self._open_file)
+        toolbar.addWidget(self._open_btn)
+
+        self._info_label = QLabel("未加载视频")
+        self._info_label.setStyleSheet(f"color: {COLORS['text_secondary']}; font-size: 12px;")
+        toolbar.addWidget(self._info_label)
+        toolbar.addStretch()
+        root.addLayout(toolbar)
+
+        # === 主体：播放器 + 右侧面板 ===
+        body = QSplitter(Qt.Orientation.Horizontal)
+
+        # --- 左侧：播放器 ---
+        left = QWidget()
+        left_layout = QVBoxLayout(left)
+        left_layout.setContentsMargins(0, 0, 8, 0)
+
+        self._preview = VideoPreview()
+        self._preview.duration_loaded.connect(lambda d: self._trim_end.setValue(d))
+        left_layout.addWidget(self._preview, 1)
+
+        body.addWidget(left)
+
+        # --- 右侧：工具面板（滚动） ---
+        right_scroll = QScrollArea()
+        right_scroll.setWidgetResizable(True)
+        right_scroll.setMinimumWidth(360)
+        right_scroll.setMaximumWidth(480)
+
+        right = QWidget()
+        right_layout = QVBoxLayout(right)
+        right_layout.setSpacing(10)
+
+        # ---- 裁剪 ----
+        trim_grp = QGroupBox("✂ 时间裁剪")
+        trim_lay = QVBoxLayout(trim_grp)
+        r1 = QHBoxLayout(); r1.addWidget(QLabel("起始(秒):"))
+        self._trim_start = QDoubleSpinBox(); self._trim_start.setRange(0, 99999); self._trim_start.setDecimals(1)
+        self._trim_start.valueChanged.connect(lambda v: setattr(self._trim, 'start_sec', v))
+        r1.addWidget(self._trim_start); trim_lay.addLayout(r1)
+
+        r2 = QHBoxLayout(); r2.addWidget(QLabel("结束(秒):"))
+        self._trim_end = QDoubleSpinBox(); self._trim_end.setRange(0, 99999); self._trim_end.setDecimals(1)
+        self._trim_end.valueChanged.connect(lambda v: setattr(self._trim, 'end_sec', v))
+        r2.addWidget(self._trim_end); trim_lay.addLayout(r2)
+
+        trim_btns = QHBoxLayout()
+        mark_btn = QPushButton("设起点")
+        mark_btn.clicked.connect(lambda: self._trim_start.setValue(self._preview.get_position()))
+        trim_btns.addWidget(mark_btn)
+        mark_end_btn = QPushButton("设终点")
+        mark_end_btn.clicked.connect(lambda: self._trim_end.setValue(self._preview.get_position()))
+        trim_btns.addWidget(mark_end_btn)
+        reset_btn = QPushButton("重置")
+        reset_btn.clicked.connect(self._reset_trim)
+        trim_btns.addWidget(reset_btn)
+        trim_lay.addLayout(trim_btns)
+
+        self._preview_trim_btn = QPushButton("▶ 预览裁剪范围")
+        self._preview_trim_btn.clicked.connect(self._preview_trim)
+        trim_lay.addWidget(self._preview_trim_btn)
+
+        right_layout.addWidget(trim_grp)
+
+        # ---- 特效 ----
+        fx_grp = QGroupBox("✦ 已添加特效")
+        fx_lay = QVBoxLayout(fx_grp)
+
+        self._fx_list = QListWidget()
+        fx_lay.addWidget(self._fx_list)
+
+        fx_btns = QHBoxLayout()
+        self._fx_tree = QTreeWidget()
+        self._fx_tree.setHeaderHidden(True)
+        self._fx_tree.setMaximumHeight(160)
+        self._populate_fx_tree()
+        self._fx_tree.itemDoubleClicked.connect(self._add_fx)
+        fx_lay.addWidget(self._fx_tree)
+
+        rm_fx = QPushButton("✕ 移除选中"); rm_fx.clicked.connect(self._remove_fx)
+        fx_btns.addWidget(rm_fx)
+        fx_lay.addLayout(fx_btns)
+
+        # 特效参数
+        self._fx_params = QWidget()
+        self._fx_params_layout = QVBoxLayout(self._fx_params)
+        self._fx_params_layout.setContentsMargins(0, 0, 0, 0)
+        fx_lay.addWidget(self._fx_params)
+
+        self._fx_list.itemClicked.connect(self._on_fx_select)
+        right_layout.addWidget(fx_grp)
+
+        # ---- 拼接 ----
+        concat_grp = QGroupBox("🔗 视频拼接")
+        concat_lay = QVBoxLayout(concat_grp)
+        self._concat_list = QListWidget()
+        self._concat_list.setMaximumHeight(80)
+        concat_lay.addWidget(self._concat_list)
+        c_btns = QHBoxLayout()
+        add_c = QPushButton("+ 添加视频"); add_c.clicked.connect(self._add_concat)
+        c_btns.addWidget(add_c)
+        rm_c = QPushButton("- 移除"); rm_c.clicked.connect(self._remove_concat)
+        c_btns.addWidget(rm_c)
+        concat_lay.addLayout(c_btns)
+        right_layout.addWidget(concat_grp)
+
+        right_layout.addStretch()
+        right_scroll.setWidget(right)
+        body.addWidget(right_scroll)
+        body.setSizes([700, 380])
+
+        root.addWidget(body, 1)
+
+    # ===== 文件操作 =====
+    def _open_file(self):
+        path, _ = QFileDialog.getOpenFileName(self, "选择视频", "",
+            "视频 (*.mp4 *.mov *.avi *.mkv *.webm *.flv *.wmv);;全部 (*.*)")
+        if path:
+            self.load_source(path)
+
+    def load_source(self, filepath: str):
+        self._source_file = filepath
+        self._preview.load_video(filepath)
+        probe = FFprobeReader(filepath)
+        info = probe.get_video_info()
+        dur = info.get("duration", 0)
+        self._info_label.setText(
+            f"{info.get('width',0)}x{info.get('height',0)} | "
+            f"{format_duration(dur)} | "
+            f"{format_filesize(info.get('size_bytes',0))}"
+        )
+        self._trim_end.setValue(dur)
+        self._concat.add_file(filepath)
+        self._concat_list.addItem(os.path.basename(filepath))
+        self.source_changed.emit(filepath)
+
+    # ===== 裁剪 =====
+    def _reset_trim(self):
+        self._trim_start.setValue(0)
+        probe = FFprobeReader(self._source_file)
+        self._trim_end.setValue(probe.duration)
+
+    def _preview_trim(self):
+        """预览裁剪起点"""
+        self._preview.set_position(self._trim_start.value())
+        self._preview._player.play()
+
+    # ===== 特效 =====
+    def _populate_fx_tree(self):
+        from app.effects import time, spatial, color, blur_noise, overlay, keying, audio, combo  # noqa
+        for cat, names in sorted(EffectRegistry.all_categories().items()):
+            cat_item = QTreeWidgetItem([cat])
+            for n in sorted(names):
+                child = QTreeWidgetItem([n])
+                child.setData(0, Qt.ItemDataRole.UserRole, n)
+                cat_item.addChild(child)
+            self._fx_tree.addTopLevelItem(cat_item)
+        self._fx_tree.expandAll()
+
+    def _add_fx(self, item, col):
+        name = item.data(0, Qt.ItemDataRole.UserRole)
+        if not name: return
+        eff = EffectRegistry.instantiate(name)
+        if eff:
+            self._pipeline.add(eff)
+            self._refresh_fx_list()
+
+    def _remove_fx(self):
+        row = self._fx_list.currentRow()
+        if row >= 0:
+            self._pipeline.remove(row)
+            self._refresh_fx_list()
+
+    def _refresh_fx_list(self):
+        self._fx_list.clear()
+        for e in self._pipeline:
+            icon = "✅" if e.enabled else "❌"
+            item = QListWidgetItem(f"{icon} {e.name}")
+            item.setData(Qt.ItemDataRole.UserRole, self._pipeline._effects.index(e))
+            self._fx_list.addItem(item)
+
+    def _on_fx_select(self, item):
+        idx = item.data(Qt.ItemDataRole.UserRole)
+        if idx is None or idx >= len(self._pipeline): return
+        self._show_fx_params(idx)
+
+    def _show_fx_params(self, idx: int):
+        # 清旧
+        while self._fx_params_layout.count():
+            c = self._fx_params_layout.takeAt(0)
+            if c.widget(): c.widget().deleteLater()
+
+        eff = self._pipeline[idx]
+        cb = QCheckBox("启用")
+        cb.setChecked(eff.enabled)
+        cb.toggled.connect(lambda v: (setattr(eff, 'enabled', v), self._refresh_fx_list(), self._on_pipeline_change()))
+        self._fx_params_layout.addWidget(cb)
+
+        for p in eff.get_param_defs():
+            lbl = QLabel(p.label)
+            lbl.setStyleSheet(f"color: {COLORS['text_secondary']}; font-size: 11px;")
+            self._fx_params_layout.addWidget(lbl)
+
+            if p.options:
+                w = QComboBox()
+                for val, lab in p.options: w.addItem(lab, val)
+                w.setCurrentIndex(max(0, [o[0] for o in p.options].index(eff.get_param(p.name))))
+                w.currentIndexChanged.connect(lambda i, n=p.name, o=p.options: (eff.set_param(n, o[i][0]), self._on_pipeline_change()))
+                self._fx_params_layout.addWidget(w)
+            elif p.param_type is float:
+                w = QDoubleSpinBox()
+                if p.min_val is not None: w.setRange(p.min_val, p.max_val or 100)
+                if p.step: w.setSingleStep(p.step)
+                w.setValue(eff.get_param(p.name) or 0)
+                if p.suffix: w.setSuffix(f" {p.suffix}")
+                w.valueChanged.connect(lambda v, n=p.name: (eff.set_param(n, v), self._on_pipeline_change()))
+                self._fx_params_layout.addWidget(w)
+            elif p.param_type is int:
+                w = QSpinBox()
+                if p.min_val is not None: w.setRange(int(p.min_val), int(p.max_val or 100))
+                w.setValue(eff.get_param(p.name) or 0)
+                if p.suffix: w.setSuffix(f" {p.suffix}")
+                w.valueChanged.connect(lambda v, n=p.name: (eff.set_param(n, v), self._on_pipeline_change()))
+                self._fx_params_layout.addWidget(w)
+
+    def _on_pipeline_change(self):
+        pass  # 已通过 effects_changed 信号通知外部
+
+    # ===== 拼接 =====
+    def _add_concat(self):
+        path, _ = QFileDialog.getOpenFileName(self, "选择要拼接的视频", "", "视频 (*.mp4 *.mov *.avi *.mkv *.webm)")
+        if path:
+            self._concat.add_file(path)
+            self._concat_list.addItem(os.path.basename(path))
+
+    def _remove_concat(self):
+        row = self._concat_list.currentRow()
+        if row >= 0:
+            self._concat_list.takeItem(row)
+            self._concat.remove_file(row)
+
+    # ===== 公开 =====
+    def get_source(self) -> str: return self._source_file
+    def get_trim(self) -> TrimHandler: return self._trim
+    def get_pipeline(self) -> EffectPipeline: return self._pipeline

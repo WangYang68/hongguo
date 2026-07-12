@@ -1,0 +1,40 @@
+package com.example.magicpinao.core.data
+
+import android.content.Context
+import androidx.room.Database
+import androidx.room.Room
+import androidx.room.RoomDatabase
+
+/**
+ * 应用数据库
+ */
+@Database(
+    entities = [MusicEntity::class, CoordinateEntity::class],
+    version = 2,
+    exportSchema = false
+)
+abstract class AppDatabase : RoomDatabase() {
+    
+    abstract fun musicDao(): MusicDao
+    
+    abstract fun coordinateDao(): CoordinateDao
+    
+    companion object {
+        @Volatile
+        private var INSTANCE: AppDatabase? = null
+        
+        fun getDatabase(context: Context): AppDatabase {
+            return INSTANCE ?: synchronized(this) {
+                val instance = Room.databaseBuilder(
+                    context.applicationContext,
+                    AppDatabase::class.java,
+                    "magic_piano_db"
+                )
+                    .fallbackToDestructiveMigration() // 开发阶段使用，生产环境需要 proper migration
+                    .build()
+                INSTANCE = instance
+                instance
+            }
+        }
+    }
+}

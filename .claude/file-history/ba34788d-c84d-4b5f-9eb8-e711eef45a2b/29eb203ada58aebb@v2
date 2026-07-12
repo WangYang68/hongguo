@@ -1,0 +1,174 @@
+"""
+EditTab — 视频编辑标签页
+视频预览 + 时间轴裁剪 + 拼接 + 音频处理
+【开发状态：已完成】
+"""
+
+import os
+from PyQt6.QtWidgets import (
+    QWidget, QVBoxLayout, QHBoxLayout, QLabel,
+    QPushButton, QGroupBox, QFileDialog, QSpinBox, QDoubleSpinBox,
+    QListWidget, QMessageBox, QSplitter,
+)
+from PyQt6.QtCore import Qt, pyqtSignal
+from app.theme import COLORS
+from app.widgets.video_preview import VideoPreview
+from app.editing.trim import TrimHandler
+from app.editing.concat import ConcatHandler
+from app.ffmpeg.probe import FFprobeReader
+from app.utils.file_utils import format_duration, format_filesize
+
+
+class EditTab(QWidget):
+    """视频编辑功能标签页"""
+
+    source_changed = pyqtSignal(str)  # filepath
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self._source_file = ""
+        self._trim = TrimHandler()
+        self._concat = ConcatHandler()
+        self._init_ui()
+
+    def _init_ui(self):
+        root = QHBoxLayout(self)
+        root.setContentsMargins(20, 16, 20, 16)
+        root.setSpacing(16)
+
+        # --- 左侧：视频预览 ---
+        left = QVBoxLayout()
+        left.setSpacing(12)
+
+        title = QLabel("✂ 视频编辑")
+        title.setStyleSheet(f"font-size: 22px; font-weight: 700; color: {COLORS['text_primary']};")
+        left.addWidget(title)
+
+        self._preview = VideoPreview()
+        left.addWidget(self._preview, 1)
+
+        # 打开文件
+        open_row = QHBoxLayout()
+        self._open_btn = QPushButton("📂 导入视频")
+        self._open_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        self._open_btn.clicked.connect(self._open_file)
+        open_row.addWidget(self._open_btn)
+
+        self._info_label = QLabel("未加载视频")
+        self._info_label.setStyleSheet(f"color: {COLORS['text_secondary']}; font-size: 12px;")
+        open_row.addWidget(self._info_label)
+        open_row.addStretch()
+        left.addLayout(open_row)
+
+        root.addLayout(left, 3)
+
+        # --- 右侧：编辑面板 ---
+        right = QVBoxLayout()
+        right.setSpacing(12)
+
+        # 裁剪组
+        trim_group = QGroupBox("🎬 时间裁剪")
+        trim_layout = QVBoxLayout(trim_group)
+        trim_layout.setSpacing(6)
+
+        r1 = QHBoxLayout()
+        r1.addWidget(QLabel("起始(秒):"))
+        self._trim_start = QDoubleSpinBox()
+        self._trim_start.setRange(0, 99999)
+        self._trim_start.setDecimals(1)
+        self._trim_start.valueChanged.connect(self._on_trim)
+        r1.addWidget(self._trim_start)
+        trim_layout.addLayout(r1)
+
+        r2 = QHBoxLayout()
+        r2.addWidget(QLabel("结束(秒):"))
+        self._trim_end = QDoubleSpinBox()
+        self._trim_end.setRange(0, 99999)
+        self._trim_end.setDecimals(1)
+        self._trim_end.valueChanged.connect(self._on_trim)
+        r2.addWidget(self._trim_end)
+        trim_layout.addLayout(r2)
+
+        self._trim_reset = QPushButton("重置裁剪")
+        self._trim_reset.setProperty("class", "secondary")
+        self._trim_reset.clicked.connect(self._reset_trim)
+        trim_layout.addWidget(self._trim_reset)
+
+        right.addWidget(trim_group)
+
+        # 拼接组
+        concat_group = QGroupBox("🔗 视频拼接")
+        concat_layout = QVBoxLayout(concat_group)
+        self._concat_list = QListWidget()
+        concat_layout.addWidget(self._concat_list)
+
+        btns = QHBoxLayout()
+        add_btn = QPushButton("+ 添加")
+        add_btn.clicked.connect(self._add_concat)
+        btns.addWidget(add_btn)
+        rm_btn = QPushButton("✕ 移除")
+        rm_btn.setProperty("class", "secondary")
+        rm_btn.clicked.connect(self._remove_concat)
+        btns.addWidget(rm_btn)
+        concat_layout.addLayout(btns)
+        right.addWidget(concat_group)
+
+        right.addStretch()
+        root.addLayout(right, 1)
+
+    # ---- 文件操作 ----
+    def _open_file(self):
+        path, _ = QFileDialog.getOpenFileName(
+            self, "选择视频文件", "",
+            "视频文件 (*.mp4 *.mov *.avi *.mkv *.webm *.flv *.wmv);;所有文件 (*.*)"
+        )
+        if path:
+            self.load_source(path)
+
+    def load_source(self, filepath: str):
+        """加载源视频"""
+        self._source_file = filepath
+        self._preview.load_video(filepath)
+
+        probe = FFprobeReader(filepath)
+        info = probe.get_video_info()
+        self._info_label.setText(
+            f"{info.get('width',0)}x{info.get('height',0)} | "
+            f"{format_duration(info.get('duration',0))} | "
+            f"{format_filesize(info.get('size_bytes',0))}"
+        )
+        self._trim_end.setValue(info.get("duration", 0))
+        self._concat.add_file(filepath)
+        self._concat_list.addItem(os.path.basename(filepath))
+        self.source_changed.emit(filepath)
+
+    # ---- 裁剪 ----
+    def _on_trim(self):
+        self._trim.start_sec = self._trim_start.value()
+        self._trim.end_sec = self._trim_end.value()
+
+    def _reset_trim(self):
+        self._trim_start.setValue(0)
+        if self._source_file:
+            probe = FFprobeReader(self._source_file)
+            self._trim_end.setValue(probe.duration)
+
+    # ---- 拼接 ----
+    def _add_concat(self):
+        path, _ = QFileDialog.getOpenFileName(self, "选择要拼接的视频", "", "视频文件 (*.mp4 *.mov *.avi *.mkv *.webm)")
+        if path:
+            self._concat.add_file(path)
+            self._concat_list.addItem(os.path.basename(path))
+
+    def _remove_concat(self):
+        row = self._concat_list.currentRow()
+        if row >= 0:
+            self._concat_list.takeItem(row)
+            self._concat.remove_file(row)
+
+    # ---- 公开 ----
+    def get_source(self) -> str:
+        return self._source_file
+
+    def get_trim(self) -> TrimHandler:
+        return self._trim

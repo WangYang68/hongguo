@@ -1,0 +1,80 @@
+"""
+色彩特效：反色、灰度、色相循环、RGB分离、色彩量化
+【开发状态：已完成】
+"""
+
+from app.effects.base import BaseEffect, EffectParam
+
+
+class InvertEffect(BaseEffect):
+    """反色/负片"""
+    name = "反色"
+    category = "色彩特效"
+    description = "颜色完全反转"
+    status = "已完成"
+    @classmethod
+    def get_param_defs(cls): return []
+    def get_filter_string(self, in_label="0:v", out_label="v0"):
+        return f"[{in_label}]negate[{out_label}]"
+
+
+class GrayscaleEffect(BaseEffect):
+    """灰度/黑白"""
+    name = "灰度"
+    category = "色彩特效"
+    description = "移除颜色变为黑白画面"
+    status = "已完成"
+    @classmethod
+    def get_param_defs(cls): return []
+    def get_filter_string(self, in_label="0:v", out_label="v0"):
+        return f"[{in_label}]colorchannelmixer=.3:.4:.3:0:.3:.4:.3:0:.3:.4:.3[{out_label}]"
+
+
+class HueCycleEffect(BaseEffect):
+    """色相循环"""
+    name = "色相循环"
+    category = "色彩特效"
+    description = "色相随时间循环变化"
+    status = "已完成"
+    @classmethod
+    def get_param_defs(cls):
+        return [EffectParam("speed", "变化速度", float, 1.0, 0.1, 5.0, 0.1)]
+    def get_filter_string(self, in_label="0:v", out_label="v0"):
+        s = self.get_param("speed") or 1.0
+        return f"[{in_label}]hue=H=mod(360*t*{s},360)[{out_label}]"
+
+
+class RGBSplitEffect(BaseEffect):
+    """RGB 通道偏移（故障艺术）"""
+    name = "RGB分离"
+    category = "色彩特效"
+    description = "红绿蓝通道偏移，故障艺术效果"
+    status = "已完成"
+    @classmethod
+    def get_param_defs(cls):
+        return [EffectParam("offset", "偏移量", int, 8, 1, 30, 1, suffix="px")]
+    def get_filter_string(self, in_label="0:v", out_label="v0"):
+        o = self.get_param("offset") or 8
+        return (
+            f"[{in_label}]split=3[r][g][b];"
+            f"[r]lutrgb=g=0:b=0,pad=iw+{o*2}:ih+{o*2}:{o}:0[red];"
+            f"[g]lutrgb=r=0:b=0,pad=iw+{o*2}:ih+{o*2}:{o//2}:{o//2}[green];"
+            f"[b]lutrgb=r=0:g=0,pad=iw+{o*2}:ih+{o*2}:0:{o}[blue];"
+            f"[red][green]blend=all_mode=addition[tmp];"
+            f"[tmp][blue]blend=all_mode=addition,"
+            f"crop=iw-{o*2}:ih-{o*2}:{o}:{o}[{out_label}]"
+        )
+
+
+class ColorQuantizeEffect(BaseEffect):
+    """色彩量化（像素画风）"""
+    name = "色彩量化"
+    category = "色彩特效"
+    description = "减少颜色数量，像素画风格"
+    status = "已完成"
+    @classmethod
+    def get_param_defs(cls):
+        return [EffectParam("colors", "颜色数量", int, 16, 2, 256, 2)]
+    def get_filter_string(self, in_label="0:v", out_label="v0"):
+        c = self.get_param("colors") or 16
+        return f"[{in_label}]scale=iw/2:ih/2:flags=neighbor,posterize={c},scale=iw*2:ih*2:flags=neighbor[{out_label}]"

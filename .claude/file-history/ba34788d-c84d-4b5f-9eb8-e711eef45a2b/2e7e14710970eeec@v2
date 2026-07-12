@@ -1,0 +1,533 @@
+# SaveAny — AI 万能视频下载器 项目分析报告
+
+> 分析日期: 2026-05-30 | 版本: 1.0.0
+
+---
+
+## 一、项目概览
+
+| 项目 | 说明 |
+|------|------|
+| **产品名** | SaveAny — AI 万能视频下载器 & 智能摘要工具 |
+| **技术栈** | Vue 3 + Vite + Tailwind CSS 4（前端） / FastAPI + yt-dlp + SQLite（后端） |
+| **AI 能力** | 集成 DeepSeek 大模型，提供视频摘要、思维导图、AI 问答 |
+| **支付体系** | Stripe Checkout，VIP 会员订阅制 |
+| **核心定位** | 支持 1800+ 平台的视频解析、无水印下载、字幕提取、AI 内容总结 |
+
+---
+
+## 二、项目目录结构
+
+```
+free-video-downloader/
+├── README.md                          # 项目介绍与快速开始
+├── .gitignore                         # Git 忽略规则
+├── GEO优化入门指南.md                  # 生成式引擎优化指南
+├── 鱼厂 SEO 优化工作流.md              # SEO 标准化流程
+│
+├── backend/                           # ===== 后端 =====
+│   ├── main.py                        # FastAPI 入口，路由分发
+│   ├── downloader.py                  # yt-dlp 封装（通用视频下载器）
+│   ├── douyin.py                      # 抖音专用解析器（无水印）
+│   ├── kuaishou.py                    # 快手专用解析器（无水印）
+│   ├── summarizer.py                  # AI 摘要模块（字幕提取 + DeepSeek）
+│   ├── database.py                    # SQLite 数据库层（用户/订单/配额）
+│   ├── auth.py                        # JWT 认证（注册/登录/鉴权）
+│   ├── api_auth.py                    # 认证 API 路由
+│   ├── api_payment.py                 # Stripe 支付 API 路由
+│   ├── api_summarize.py              # AI 摘要 SSE 流式路由
+│   ├── requirements.txt               # Python 依赖
+│   └── .env                           # 环境变量（敏感信息）
+│
+├── frontend/                          # ===== 前端 =====
+│   ├── index.html                     # HTML 入口（含完整 SEO）
+│   ├── vite.config.js                 # Vite 构建配置
+│   ├── package.json                   # Node.js 依赖
+│   ├── public/robots.txt              # 爬虫规则
+│   └── src/
+│       ├── main.js                    # Vue 应用入口
+│       ├── style.css                  # 全局样式（Tailwind CSS 4）
+│       ├── App.vue                    # 根组件（全局状态管理）
+│       ├── api/
+│       │   ├── video.js               # 视频 API 客户端
+│       │   ├── auth.js                # 认证 API 客户端
+│       │   ├── payment.js             # 支付 API 客户端
+│       │   └── summarize.js           # SSE 流式摘要客户端
+│       └── components/
+│           ├── AppHeader.vue          # 顶部导航栏
+│           ├── HeroSection.vue        # 搜索输入框
+│           ├── VideoResult.vue        # 视频信息 + 格式选择
+│           ├── VideoSummary.vue       # AI 摘要/字幕/思维导图/问答
+│           ├── FeatureSection.vue     # 功能特点展示
+│           ├── HowToSection.vue       # 使用步骤
+│           ├── ComparisonSection.vue  # 竞品对比表
+│           ├── PricingSection.vue     # 价格方案
+│           ├── PlatformSection.vue    # 支持平台展示
+│           ├── AppFooter.vue          # 底部信息
+│           └── AuthModal.vue          # 登录/注册弹窗
+│
+└── docs/                              # ===== 文档 =====
+    ├── 需求分析.md                     # 需求分析文档
+    ├── 方案设计.md                     # 技术方案设计
+    └── 保姆级本地运行指南.md           # 本地部署教程
+```
+
+---
+
+## 三、所有 API 接口一览
+
+### 3.1 核心视频接口
+
+| 方法 | 路径 | 说明 | 鉴权 |
+|------|------|------|------|
+| `GET` | `/api/health` | 健康检查，返回 `{"status":"ok"}` | 无 |
+| `POST` | `/api/parse` | 解析视频信息（标题/封面/格式/时长等） | 无 |
+| `POST` | `/api/download` | 服务端下载视频，返回文件流 | 无 |
+| `POST` | `/api/direct-url` | 获取视频直链（不下载文件） | 无 |
+| `GET` | `/api/proxy/thumbnail` | 缩略图代理，绕过防盗链 | 无 |
+
+#### `POST /api/parse`
+
+```
+请求: { "url": "视频链接" }
+响应: {
+  "success": true,
+  "data": {
+    "id": "视频ID",
+    "title": "视频标题",
+    "thumbnail": "封面图URL",
+    "duration": 193,              // 秒
+    "duration_string": "3:13",
+    "uploader": "作者名",
+    "platform": "平台名",
+    "view_count": 5537,
+    "upload_date": "20250805",
+    "description": "描述(前200字)",
+    "formats": [
+      {
+        "format_id": "格式标识",
+        "ext": "mp4",
+        "resolution": "1280x720",
+        "height": 720,
+        "filesize": 文件大小(bytes),
+        "vcodec": "h264",
+        "acodec": "aac",
+        "has_audio": true,
+        "label": "无水印 MP4 (720p)",
+        "_direct_url": "直链(抖音/快手专用)"
+      }
+    ],
+    "subtitles": ["zh-Hans"],
+    "automatic_captions": []
+  }
+}
+```
+
+#### `POST /api/download`
+
+```
+请求: { "url": "视频链接", "format_id": "bestvideo+bestaudio/best" }
+响应: 二进制文件流 (Content-Type: application/octet-stream)
+```
+
+#### `POST /api/direct-url`
+
+```
+请求: { "url": "视频链接", "format_id": "bestvideo+bestaudio/best" }
+响应: {
+  "success": true,
+  "data": {
+    "direct_url": "https://cdn.example.com/video.mp4",
+    "ext": "mp4",
+    "filesize": 文件大小,
+    "title": "视频标题"
+  }
+}
+```
+
+#### `GET /api/proxy/thumbnail?url=缩略图URL`
+
+```
+响应: 图片二进制流 (Content-Type: image/jpeg)
+```
+
+### 3.2 AI 摘要接口（SSE 流式）
+
+| 方法 | 路径 | 说明 | 鉴权 |
+|------|------|------|------|
+| `POST` | `/api/summarize` | 视频 AI 摘要（SSE 流式推送） | 需登录 |
+| `POST` | `/api/chat` | 视频 AI 问答（SSE 流式推送） | 需登录 |
+
+#### `POST /api/summarize` (SSE)
+
+```
+请求: { "url": "视频链接", "language": "zh" }
+响应: SSE 事件流
+  event: subtitle    → { "segments": [...], "full_text": "...", "language": "zh" }
+  event: summary     → { "token": "文" }    // 逐 token 推送
+  event: mindmap     → { "content": "# 思维导图\n..." }
+  event: quota       → { "remaining": 2, "is_vip": false }
+  event: done        → {}
+  event: error       → { "message": "错误信息" }
+```
+
+#### `POST /api/chat` (SSE)
+
+```
+请求: { "url": "视频链接", "question": "这个视频讲了什么?", "subtitle_text": "..." }
+响应: SSE 事件流
+  event: answer      → { "token": "答" }    // 逐 token 推送
+  event: done        → {}
+  event: error       → { "message": "错误信息" }
+```
+
+### 3.3 认证接口
+
+| 方法 | 路径 | 说明 | 鉴权 |
+|------|------|------|------|
+| `POST` | `/api/auth/register` | 用户注册 | 无 |
+| `POST` | `/api/auth/login` | 用户登录 | 无 |
+| `GET` | `/api/auth/me` | 获取当前用户信息 | Bearer Token |
+
+#### `POST /api/auth/register`
+
+```
+请求: { "email": "user@example.com", "password": "securePassword123" }
+响应: {
+  "token": "eyJhbGciOi...",
+  "user": {
+    "id": 1,
+    "email": "user@example.com",
+    "is_vip": false,
+    "vip_expire_at": null,
+    "daily_summary_count": 0
+  }
+}
+```
+
+#### `POST /api/auth/login`
+
+```
+请求: { "email": "user@example.com", "password": "securePassword123" }
+响应: 同上
+```
+
+#### `GET /api/auth/me`
+
+```
+请求头: Authorization: Bearer <token>
+响应: {
+  "id": 1,
+  "email": "user@example.com",
+  "is_vip": true,
+  "vip_expire_at": "2026-06-30T23:59:59",
+  "daily_summary_count": 5
+}
+```
+
+### 3.4 支付接口（Stripe）
+
+| 方法 | 路径 | 说明 | 鉴权 |
+|------|------|------|------|
+| `POST` | `/api/payment/create-checkout` | 创建 Stripe 支付会话 | 需登录 |
+| `POST` | `/api/payment/webhook` | Stripe 支付回调 | Stripe 签名 |
+| `GET` | `/api/payment/orders` | 查询用户订单列表 | 需登录 |
+
+#### `POST /api/payment/create-checkout`
+
+```
+请求: { "plan_type": "monthly" }
+响应: { "checkout_url": "https://checkout.stripe.com/..." }
+```
+
+#### `POST /api/payment/webhook`
+
+```
+来源: Stripe 服务器推送
+事件: checkout.session.completed / checkout.session.async_payment_succeeded
+```
+
+---
+
+## 四、各模块功能说明
+
+### 4.1 后端模块
+
+| 模块 | 文件 | 核心职责 |
+|------|------|----------|
+| **入口 & 路由** | `main.py` | FastAPI 应用初始化、CORS 配置、URL 路由分发（抖音→douyin、快手→kuaishou、其他→yt-dlp）、缩略图代理 |
+| **通用下载器** | `downloader.py` | yt-dlp 封装层，提供通用视频解析/下载/直链获取，自动检测 ffmpeg，格式筛选与排序 |
+| **抖音解析器** | `douyin.py` | 抖音专用：短链重定向 → 提取 video_id → 公开 API 或分享页解析 → 无水印直链；支持 WAF 反爬破解 |
+| **快手解析器** | `kuaishou.py` | 快手专用：SSR 页面正则提取 → 视频/图集元数据 → 无水印直链；支持短链重定向 |
+| **AI 摘要模块** | `summarizer.py` | 双重能力：(1) `SubtitleExtractor` 通过 yt-dlp 或 Bilibili API 提取字幕；(2) `VideoSummarizer` 调用 DeepSeek API 生成摘要/思维导图/问答 |
+| **数据库层** | `database.py` | SQLite 数据库管理：`users` 表（含 VIP 状态与每日配额）、`orders` 表（订单记录）；支持 VIP 累加续期 |
+| **认证模块** | `auth.py` | bcrypt 密码哈希、JWT 签发/验证（72h 过期）、邮箱/密码格式校验、FastAPI 依赖注入（当前用户/可选用户） |
+| **认证路由** | `api_auth.py` | 注册/登录/获取用户信息 API |
+| **支付路由** | `api_payment.py` | Stripe Checkout 集成：创建支付会话、Webhook 回调处理、VIP 激活 |
+| **摘要路由** | `api_summarize.py` | SSE 流式 API：摘要生成 + 问答对话，含登录检查和每日配额控制 |
+
+### 4.2 前端模块
+
+| 模块 | 文件 | 核心职责 |
+|------|------|----------|
+| **根组件** | `App.vue` | 全局状态管理（用户、视频数据、加载状态、演示模式），编排解析/下载/AI 摘要全流程 |
+| **搜索区** | `HeroSection.vue` | URL 输入框，示例链接，URL 规范化 |
+| **视频结果** | `VideoResult.vue` | 展示视频元数据、格式选择器、下载按钮 |
+| **AI 面板** | `VideoSummary.vue` | 四标签页：AI 摘要（Markdown 流式渲染）、字幕（时间轴 + SRT/VTT/TXT 导出）、思维导图（markmap 渲染 + 4K PNG/SVG 导出）、AI 问答（流式对话） |
+| **导航栏** | `AppHeader.vue` | 粘性导航、登录/注册入口、VIP 标识、用户下拉菜单 |
+| **登录弹窗** | `AuthModal.vue` | 邮箱密码登录/注册表单 |
+| **营销组件** | `FeatureSection.vue`、`HowToSection.vue`、`ComparisonSection.vue`、`PricingSection.vue`、`PlatformSection.vue`、`AppFooter.vue` | 纯展示：功能特点、使用步骤、竞品对比、价格方案、平台展示、底部信息 |
+
+### 4.3 前端 API 客户端
+
+| 模块 | 文件 | 核心职责 |
+|------|------|----------|
+| **视频 API** | `video.js` | axios 封装：`parseVideo` / `downloadViaServer` / `getDirectUrl` |
+| **认证 API** | `auth.js` | 认证请求 + localStorage token/user 持久化 |
+| **支付 API** | `payment.js` | Stripe 支付请求 |
+| **SSE 客户端** | `summarize.js` | 基于 fetch + ReadableStream 的 SSE 流解析，支持 `summarizeVideo` 和 `chatWithVideo` |
+
+---
+
+## 五、数据存储
+
+### 5.1 数据库
+
+**类型:** SQLite（本地文件数据库）
+
+**位置:** `backend/data/` 目录（已被 `.gitignore` 排除）
+
+**表结构:**
+
+#### `users` 表
+
+| 字段 | 类型 | 说明 |
+|------|------|------|
+| `id` | INTEGER PRIMARY KEY | 用户 ID |
+| `email` | TEXT UNIQUE NOT NULL | 邮箱 |
+| `password_hash` | TEXT NOT NULL | bcrypt 加密的密码 |
+| `is_vip` | INTEGER DEFAULT 0 | 是否 VIP（0/1） |
+| `vip_expire_at` | TEXT | VIP 到期时间（ISO 格式） |
+| `daily_summary_count` | INTEGER DEFAULT 0 | 当日 AI 摘要使用次数 |
+| `last_summary_date` | TEXT | 上次使用摘要的日期 |
+| `created_at` | TEXT | 注册时间 |
+| `updated_at` | TEXT | 更新时间 |
+
+**索引:** `idx_users_email`（email 唯一索引）
+
+#### `orders` 表
+
+| 字段 | 类型 | 说明 |
+|------|------|------|
+| `id` | INTEGER PRIMARY KEY | 订单 ID |
+| `order_no` | TEXT UNIQUE NOT NULL | 订单号（格式：SA + 时间戳 + 随机码） |
+| `user_id` | INTEGER NOT NULL | 关联用户 ID |
+| `amount` | INTEGER NOT NULL | 金额（分） |
+| `currency` | TEXT DEFAULT 'cny' | 货币 |
+| `status` | TEXT DEFAULT 'pending' | 状态：pending / paid / cancelled |
+| `plan_type` | TEXT NOT NULL | 方案类型：monthly / yearly |
+| `stripe_session_id` | TEXT | Stripe Checkout Session ID |
+| `stripe_payment_intent_id` | TEXT | Stripe Payment Intent ID |
+| `paid_at` | TEXT | 支付完成时间 |
+| `created_at` | TEXT | 创建时间 |
+| `updated_at` | TEXT | 更新时间 |
+
+**索引:** `idx_orders_user_id`、`idx_orders_order_no`、`idx_orders_stripe_session`
+
+### 5.2 配额机制
+
+| 用户类型 | AI 摘要配额 | 说明 |
+|----------|-----------|------|
+| 未登录 | 0 次/天 | 需登录才能使用 AI 摘要 |
+| 免费用户 | 3 次/天 | 每天凌晨自动重置 |
+| VIP 用户 | 无限 | `is_vip=1` 且 `vip_expire_at > now` |
+
+### 5.3 VIP 价格
+
+| 方案 | 价格 | 说明 |
+|------|------|------|
+| 月度 VIP | ¥9.90/月 | 无限 AI 摘要、思维导图、问答、字幕下载 |
+
+---
+
+## 六、文件存储
+
+| 目录 | 用途 | 生命周期 |
+|------|------|----------|
+| `backend/downloads/` | 视频文件下载临时目录 | 服务启动时创建，关闭时清空 |
+| `backend/data/` | SQLite 数据库文件 | 持久化存储 |
+| `backend/.env` | 环境变量（API 密钥等） | 持久化，不入 git |
+
+**下载机制:**
+- 抖音/快手：解析器返回直链，前端直接下载或服务端代理下载
+- 其他平台（yt-dlp）：服务端下载后通过 `FileResponse` 返回，下载完成后文件保留在 `downloads/` 目录直至服务重启
+
+---
+
+## 七、调用的第三方接口/服务
+
+### 7.1 视频解析相关
+
+| 服务 | 用途 | 调用方式 | 是否需要密钥 |
+|------|------|----------|-------------|
+| **yt-dlp** | 通用视频信息提取与下载（1800+ 平台） | Python 库直接调用 | 否 |
+| **抖音公开 API** (`iesdouyin.com`) | 抖音视频元数据获取 | HTTP GET | 否 |
+| **抖音分享页** (`douyin.com`) | 视频信息 SSR 解析（API 失败时的降级方案） | HTTP GET | 否 |
+| **快手 SSR 页面** (`kuaishou.com`) | 快手视频元数据提取 | HTTP GET | 否 |
+| **Bilibili API** (`api.bilibili.com`) | B 站视频字幕提取 | HTTP GET | 否 |
+
+### 7.2 AI 服务
+
+| 服务 | 用途 | API 地址 | 是否需要密钥 |
+|------|------|----------|-------------|
+| **DeepSeek** | AI 视频摘要、思维导图、问答生成 | `https://api.deepseek.com` | 需要 `DEEPSEEK_API_KEY` |
+
+### 7.3 支付服务
+
+| 服务 | 用途 | API 地址 | 是否需要密钥 |
+|------|------|----------|-------------|
+| **Stripe** | VIP 会员支付（Checkout + Webhook） | `https://api.stripe.com` | 需要 `STRIPE_SECRET_KEY` + `STRIPE_WEBHOOK_SECRET` |
+
+### 7.4 基础设施
+
+| 服务 | 用途 | 说明 |
+|------|------|------|
+| **ffmpeg** | 视频格式转换与合并 | 自动检测系统安装或使用 `static_ffmpeg` |
+
+---
+
+## 八、支持的视频平台
+
+### 8.1 专用解析器（无水印直链）
+
+| 平台 | 解析器 | 特点 |
+|------|--------|------|
+| **抖音 (Douyin)** | `douyin.py` | 无水印直链，支持短链接，WAF 反爬破解 |
+| **快手 (Kuaishou)** | `kuaishou.py` | 无水印直链，支持短链接，图集/视频 |
+
+### 8.2 yt-dlp 通用支持（1800+ 平台）
+
+通过 yt-dlp 支持的主要平台包括但不限于：
+
+| 类别 | 代表平台 |
+|------|----------|
+| **国际视频** | YouTube, Vimeo, Dailymotion, Twitch |
+| **中国视频** | Bilibili (B站), 抖音, 快手, 小红书, 微博视频, 好看视频 |
+| **短视频** | TikTok, Instagram Reels, YouTube Shorts |
+| **社交媒体** | Twitter/X, Facebook, Instagram, Reddit, Pinterest |
+| **直播平台** | Twitch, 抖音直播, B站直播 |
+| **音频平台** | SoundCloud, Mixcloud, Bandcamp |
+| **其他** | 新闻网站、教育平台、成人网站（可通过配置禁用）等 |
+
+> **注:** yt-dlp 实际支持超过 1800 个网站，完整列表见 [yt-dlp 官方支持站点](https://github.com/yt-dlp/yt-dlp/blob/master/supportedsites.md)。
+
+---
+
+## 九、系统架构图（文字版）
+
+```
+用户浏览器
+    │
+    ├─ 粘贴视频链接
+    │      │
+    │      ▼
+    │  POST /api/parse ─────────────────────────┐
+    │      │                                     │
+    │      ├─ 抖音链接 → douyin.py                │
+    │      │    ├─ 短链重定向                      │
+    │      │    ├─ 公开 API / 分享页解析           │
+    │      │    └─ 无水印直链                      │
+    │      │                                     │
+    │      ├─ 快手链接 → kuaishou.py              │
+    │      │    ├─ SSR 页面正则提取                │
+    │      │    └─ 无水印直链                      │
+    │      │                                     │
+    │      └─ 其他链接 → downloader.py (yt-dlp)   │
+    │           └─ 通用提取器                      │
+    │                                             │
+    ├─ 获取解析结果（标题/封面/格式列表）            │
+    │                                             │
+    ├─ POST /api/summarize (SSE) ────────────────┤
+    │      │                                     │
+    │      ├─ summarizer.py                      │
+    │      │    ├─ yt-dlp 提取字幕                 │
+    │      │    ├─ DeepSeek API → 摘要/思维导图     │
+    │      │    └─ SSE 流式推送                    │
+    │      │                                     │
+    ├─ POST /api/download ──────────────────────┤
+    │      └─ 返回视频文件流                       │
+    │                                             │
+    ├─ 认证: post /api/auth/* ───────────────────┤
+    │      └─ JWT + SQLite                       │
+    │                                             │
+    └─ 支付: post /api/payment/* ────────────────┤
+           └─ Stripe Checkout + Webhook           │
+                                                  │
+第三方服务:                                         │
+  • iesdouyin.com (抖音 API)                       │
+  • api.deepseek.com (AI 大模型)                   │
+  • api.stripe.com (支付)                          │
+  • api.bilibili.com (B站字幕)                     │
+  • yt-dlp 内置 1800+ 提取器                       │
+```
+
+---
+
+## 十、环境变量清单
+
+| 变量名 | 用途 | 必须 |
+|--------|------|------|
+| `DEEPSEEK_API_KEY` | DeepSeek AI 接口密钥 | 是 |
+| `JWT_SECRET` | JWT 令牌签名密钥 | 是 |
+| `STRIPE_SECRET_KEY` | Stripe 支付密钥 | 否（支付功能可选） |
+| `STRIPE_WEBHOOK_SECRET` | Stripe Webhook 签名密钥 | 否 |
+| `STRIPE_PRICE_ID_MONTHLY` | Stripe 月度价格 ID | 否 |
+| `FRONTEND_URL` | 前端地址（支付回调） | 否 |
+
+---
+
+## 十一、依赖清单
+
+### 后端 (Python)
+
+```
+fastapi>=0.135.0        # Web 框架
+uvicorn>=0.34.0         # ASGI 服务器
+yt-dlp>=2026.1.0        # 通用视频下载引擎
+python-multipart>=0.0.18 # 文件上传支持
+httpx>=0.28.0           # 异步 HTTP 客户端
+openai>=1.0.0           # OpenAI SDK（用于 DeepSeek）
+python-dotenv>=1.0.0    # 环境变量加载
+bcrypt>=4.0.0           # 密码哈希
+PyJWT>=2.8.0            # JWT 令牌
+stripe>=8.0.0           # Stripe 支付 SDK
+python-dateutil>=2.8.0  # 日期工具
+```
+
+### 前端 (Node.js)
+
+```
+vue@^3.5.25             # 前端框架
+vite@^7.3.1             # 构建工具
+tailwindcss@^4.2.1      # CSS 框架
+axios@^1.13.5           # HTTP 客户端
+marked@^17.0.3          # Markdown 解析
+markmap-lib@^0.18.12    # 思维导图生成
+markmap-view@^0.18.12   # 思维导图渲染
+```
+
+---
+
+## 十二、URL 路由分发逻辑
+
+```
+POST /api/parse
+    │
+    ├─ is_douyin_url(url)?  ───→ douyin_parser.parse(url)
+    ├─ is_kuaishou_url(url)? ──→ kuaishou_parser.parse(url)
+    └─ 其他                   ──→ downloader.parse_video(url)  [yt-dlp]
+```
+
+---
+
+*文档由 Claude Code 自动生成，基于 2026-05-30 代码快照。*

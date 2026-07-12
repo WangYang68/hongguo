@@ -1,0 +1,417 @@
+package com.example.magicpinao.ui.screens.calibration
+
+import androidx.compose.foundation.background
+import androidx.compose.foundation.clickable
+import androidx.compose.foundation.layout.*
+import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.ArrowBack
+import androidx.compose.material3.*
+import androidx.compose.runtime.*
+import androidx.compose.ui.Alignment
+import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clip
+import androidx.compose.ui.graphics.Brush
+import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.unit.dp
+import com.example.magicpinao.core.accessibility.SupportedApps
+import com.example.magicpinao.core.accessibility.TargetApp
+import com.example.magicpinao.ui.theme.*
+
+/**
+ * 坐标标定界面
+ */
+@Composable
+fun CalibrationScreen(
+    onBackClick: () -> Unit
+) {
+    var selectedApp by remember { mutableStateOf<TargetApp?>(null) }
+    var calibrationStep by remember { mutableStateOf(0) }
+    
+    Box(
+        modifier = Modifier
+            .fillMaxSize()
+            .background(BackgroundDark)
+    ) {
+        Column(
+            modifier = Modifier.fillMaxSize()
+        ) {
+            // 顶部栏
+            TopAppBar(
+                title = {
+                    Text(
+                        "标定琴键坐标",
+                        color = TextPrimary,
+                        fontWeight = FontWeight.Bold
+                    )
+                },
+                navigationIcon = {
+                    IconButton(onClick = onBackClick) {
+                        Icon(
+                            Icons.Default.ArrowBack,
+                            contentDescription = "返回",
+                            tint = TextPrimary
+                        )
+                    }
+                },
+                colors = TopAppBarDefaults.topAppBarColors(
+                    containerColor = SurfaceDark
+                )
+            )
+            
+            // 内容区域
+            if (selectedApp == null) {
+                // 选择应用
+                AppSelectionScreen(
+                    onSelectApp = { app ->
+                        selectedApp = app
+                        calibrationStep = 1
+                    }
+                )
+            } else {
+                // 标定流程
+                CalibrationStepScreen(
+                    app = selectedApp!!,
+                    step = calibrationStep,
+                    onComplete = {
+                        // TODO: 保存坐标配置
+                        onBackClick()
+                    }
+                )
+            }
+        }
+    }
+}
+
+/**
+ * 应用选择界面
+ */
+@Composable
+private fun AppSelectionScreen(
+    onSelectApp: (TargetApp) -> Unit
+) {
+    Column(
+        modifier = Modifier
+            .fillMaxSize()
+            .padding(16.dp),
+        horizontalAlignment = Alignment.CenterHorizontally,
+        verticalArrangement = Arrangement.Center
+    ) {
+        Text(
+            "选择目标应用",
+            style = MaterialTheme.typography.headlineSmall,
+            color = TextPrimary,
+            fontWeight = FontWeight.Bold
+        )
+        
+        Spacer(modifier = Modifier.height(8.dp))
+        
+        Text(
+            "请选择要标定的钢琴应用",
+            style = MaterialTheme.typography.bodyLarge,
+            color = TextSecondary
+        )
+        
+        Spacer(modifier = Modifier.height(32.dp))
+        
+        // 应用列表
+        SupportedApps.apps.forEach { app ->
+            AppCard(
+                app = app,
+                onClick = { onSelectApp(app) },
+                modifier = Modifier.padding(vertical = 8.dp)
+            )
+        }
+    }
+}
+
+/**
+ * 应用卡片
+ */
+@Composable
+private fun AppCard(
+    app: TargetApp,
+    onClick: () -> Unit,
+    modifier: Modifier = Modifier
+) {
+    Card(
+        modifier = modifier
+            .fillMaxWidth()
+            .clickable(onClick = onClick),
+        colors = CardDefaults.cardColors(
+            containerColor = SurfaceDark
+        ),
+        shape = RoundedCornerShape(12.dp),
+        elevation = CardDefaults.cardElevation(defaultElevation = 4.dp)
+    ) {
+        Row(
+            modifier = Modifier
+                .padding(16.dp)
+                .fillMaxWidth(),
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            // 图标占位
+            Box(
+                modifier = Modifier
+                    .size(56.dp)
+                    .clip(RoundedCornerShape(12.dp))
+                    .background(
+                        Brush.linearGradient(
+                            colors = listOf(PrimaryPurple, SecondaryCyan)
+                        )
+                    ),
+                contentAlignment = Alignment.Center
+            ) {
+                Text(
+                    "🎹",
+                    style = MaterialTheme.typography.headlineMedium
+                )
+            }
+            
+            Spacer(modifier = Modifier.width(16.dp))
+            
+            Column(
+                modifier = Modifier.weight(1f)
+            ) {
+                Text(
+                    text = app.appName,
+                    style = MaterialTheme.typography.titleMedium,
+                    color = TextPrimary,
+                    fontWeight = FontWeight.Bold
+                )
+                
+                Text(
+                    text = "${app.keyCount}键 | ${app.description}",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = TextSecondary
+                )
+            }
+        }
+    }
+}
+
+/**
+ * 标定步骤界面
+ */
+@Composable
+private fun CalibrationStepScreen(
+    app: TargetApp,
+    step: Int,
+    onComplete: () -> Unit
+) {
+    Column(
+        modifier = Modifier
+            .fillMaxSize()
+            .padding(16.dp),
+        horizontalAlignment = Alignment.CenterHorizontally
+    ) {
+        // 进度指示器
+        StepperIndicator(
+            currentStep = step,
+            totalSteps = 3
+        )
+        
+        Spacer(modifier = Modifier.height(32.dp))
+        
+        when (step) {
+            1 -> {
+                // 步骤1：打开应用
+                StepOpenAppView(
+                    app = app,
+                    onNext = { /* TODO: 打开应用 */ }
+                )
+            }
+            2 -> {
+                // 步骤2：自动识别或手动标定
+                StepCalibrateView(
+                    app = app,
+                    onComplete = onComplete
+                )
+            }
+            3 -> {
+                // 步骤3：完成
+                StepCompleteView(
+                    onComplete = onComplete
+                )
+            }
+        }
+    }
+}
+
+/**
+ * 步骤指示器
+ */
+@Composable
+private fun StepperIndicator(
+    currentStep: Int,
+    totalSteps: Int
+) {
+    Row(
+        horizontalArrangement = Arrangement.spacedBy(8.dp),
+        verticalAlignment = Alignment.CenterVertically
+    ) {
+        for (i in 1..totalSteps) {
+            Box(
+                modifier = Modifier
+                    .size(if (i == currentStep) 12.dp else 8.dp)
+                    .clip(RoundedCornerShape(50))
+                    .background(
+                        if (i <= currentStep) PrimaryPurple else SurfaceLight
+                    )
+            )
+        }
+    }
+}
+
+/**
+ * 步骤1：打开应用
+ */
+@Composable
+private fun StepOpenAppView(
+    app: TargetApp,
+    onNext: () -> Unit
+) {
+    Column(
+        horizontalAlignment = Alignment.CenterHorizontally
+    ) {
+        Text(
+            "步骤 1/3",
+            style = MaterialTheme.typography.titleLarge,
+            color = PrimaryPurpleLight,
+            fontWeight = FontWeight.Bold
+        )
+        
+        Spacer(modifier = Modifier.height(16.dp))
+        
+        Text(
+            "请先打开 ${app.appName}",
+            style = MaterialTheme.typography.headlineSmall,
+            color = TextPrimary,
+            fontWeight = FontWeight.Bold
+        )
+        
+        Spacer(modifier = Modifier.height(32.dp))
+        
+        Button(
+            onClick = onNext,
+            modifier = Modifier
+                .fillMaxWidth()
+                .height(56.dp),
+            shape = RoundedCornerShape(12.dp),
+            colors = ButtonDefaults.buttonColors(
+                containerColor = PrimaryPurple
+            )
+        ) {
+            Text("已打开，下一步")
+        }
+    }
+}
+
+/**
+ * 步骤2：标定
+ */
+@Composable
+private fun StepCalibrateView(
+    app: TargetApp,
+    onComplete: () -> Unit
+) {
+    Column(
+        horizontalAlignment = Alignment.CenterHorizontally
+    ) {
+        Text(
+            "步骤 2/3",
+            style = MaterialTheme.typography.titleLarge,
+            color = PrimaryPurpleLight,
+            fontWeight = FontWeight.Bold
+        )
+        
+        Spacer(modifier = Modifier.height(16.dp))
+        
+        Text(
+            "选择标定方式",
+            style = MaterialTheme.typography.headlineSmall,
+            color = TextPrimary,
+            fontWeight = FontWeight.Bold
+        )
+        
+        Spacer(modifier = Modifier.height(32.dp))
+        
+        // 自动识别按钮
+        Button(
+            onClick = { /* TODO: 自动识别 */ },
+            modifier = Modifier
+                .fillMaxWidth()
+                .height(56.dp),
+            shape = RoundedCornerShape(12.dp),
+            colors = ButtonDefaults.buttonColors(
+                containerColor = PrimaryPurple
+            )
+        ) {
+            Text("🤖 自动识别（推荐）")
+        }
+        
+        Spacer(modifier = Modifier.height(16.dp))
+        
+        // 边界标定按钮
+        OutlinedButton(
+            onClick = { /* TODO: 边界标定 */ },
+            modifier = Modifier
+                .fillMaxWidth()
+                .height(56.dp),
+            shape = RoundedCornerShape(12.dp),
+            colors = ButtonDefaults.outlinedButtonColors(
+                contentColor = SecondaryCyan
+            )
+        ) {
+            Text("📏 边界标定（点击2次）")
+        }
+        
+        Spacer(modifier = Modifier.height(16.dp))
+        
+        // 跳过按钮
+        TextButton(
+            onClick = onComplete
+        ) {
+            Text("跳过（使用默认配置）", color = TextHint)
+        }
+    }
+}
+
+/**
+ * 步骤3：完成
+ */
+@Composable
+private fun StepCompleteView(
+    onComplete: () -> Unit
+) {
+    Column(
+        horizontalAlignment = Alignment.CenterHorizontally
+    ) {
+        Text(
+            "✓",
+            style = MaterialTheme.typography.displayLarge,
+            color = SuccessGreen
+        )
+        
+        Spacer(modifier = Modifier.height(16.dp))
+        
+        Text(
+            "标定完成！",
+            style = MaterialTheme.typography.headlineSmall,
+            color = TextPrimary,
+            fontWeight = FontWeight.Bold
+        )
+        
+        Spacer(modifier = Modifier.height(32.dp))
+        
+        Button(
+            onClick = onComplete,
+            modifier = Modifier
+                .fillMaxWidth()
+                .height(56.dp),
+            shape = RoundedCornerShape(12.dp)
+        ) {
+            Text("完成")
+        }
+    }
+}

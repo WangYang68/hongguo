@@ -1,0 +1,11 @@
+<resources>
+    <string name="app_name">Magic Piano</string>
+    <string name="accessibility_service_description">Magic Piano 自动演奏服务
+
+此服务用于：
+1. 自动识别钢琴应用中的琴键位置
+2. 模拟触摸事件实现自动演奏
+3. 监听应用切换以暂停/恢复演奏
+
+我们不会收集或上传任何数据，所有操作均在本地完成。</string>
+</resources>

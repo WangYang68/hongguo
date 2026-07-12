@@ -1,0 +1,234 @@
+"""
+EffectsTab — 鬼畜特效标签页
+分类树 + 已添加特效列表 + 参数面板 + 预览
+【开发状态：已完成】
+"""
+
+from PyQt6.QtWidgets import (
+    QWidget, QVBoxLayout, QHBoxLayout, QLabel, QPushButton,
+    QListWidget, QListWidgetItem, QTreeWidget, QTreeWidgetItem,
+    QScrollArea, QSplitter, QAbstractItemView,
+)
+from PyQt6.QtCore import Qt, pyqtSignal
+from app.theme import COLORS
+from app.effects.base import BaseEffect, EffectParam
+from app.effects.registry import EffectRegistry
+from app.effects.pipeline import EffectPipeline
+
+
+class EffectsTab(QWidget):
+    """特效管理标签页"""
+
+    pipeline_changed = pyqtSignal()
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self._pipeline = EffectPipeline(self)
+        self._pipeline.effects_changed.connect(lambda: self.pipeline_changed.emit())
+        self._init_ui()
+
+    def _init_ui(self):
+        root = QVBoxLayout(self)
+        root.setContentsMargins(20, 16, 20, 16)
+        root.setSpacing(12)
+
+        title = QLabel("✦ 鬼畜特效")
+        title.setStyleSheet(f"font-size: 22px; font-weight: 700; color: {COLORS['text_primary']};")
+        root.addWidget(title)
+
+        splitter = QSplitter(Qt.Orientation.Horizontal)
+
+        # --- 左侧：特效目录 ---
+        left = QWidget()
+        left_layout = QVBoxLayout(left)
+        left_layout.setContentsMargins(0, 0, 8, 0)
+
+        left_layout.addWidget(QLabel("特效目录"))
+        self._tree = QTreeWidget()
+        self._tree.setHeaderHidden(True)
+        self._tree.setDragEnabled(True)
+        self._tree.itemDoubleClicked.connect(self._add_effect)
+        self._populate_tree()
+        left_layout.addWidget(self._tree)
+
+        splitter.addWidget(left)
+
+        # --- 中间：已添加特效 ---
+        mid = QWidget()
+        mid_layout = QVBoxLayout(mid)
+        mid_layout.setContentsMargins(8, 0, 8, 0)
+
+        mid_layout.addWidget(QLabel(f"已添加特效 ({len(self._pipeline)})"))
+        self._effect_list = QListWidget()
+        self._effect_list.setDragDropMode(QAbstractItemView.DragDropMode.InternalMove)
+        self._effect_list.setSelectionMode(QAbstractItemView.SelectionMode.SingleSelection)
+        self._effect_list.itemClicked.connect(self._on_select)
+        self._effect_list.model().rowsMoved.connect(self._on_reorder)
+        mid_layout.addWidget(self._effect_list)
+
+        btns = QHBoxLayout()
+        up_btn = QPushButton("↑ 上移")
+        up_btn.clicked.connect(lambda: self._move_effect(-1))
+        btns.addWidget(up_btn)
+        dn_btn = QPushButton("↓ 下移")
+        dn_btn.clicked.connect(lambda: self._move_effect(1))
+        btns.addWidget(dn_btn)
+        rm_btn = QPushButton("✕ 移除")
+        rm_btn.setProperty("class", "danger")
+        rm_btn.clicked.connect(self._remove_effect)
+        btns.addWidget(rm_btn)
+        mid_layout.addLayout(btns)
+
+        splitter.addWidget(mid)
+
+        # --- 右侧：参数面板 ---
+        right = QWidget()
+        right_layout = QVBoxLayout(right)
+        right_layout.setContentsMargins(8, 0, 0, 0)
+
+        right_layout.addWidget(QLabel("特效参数"))
+        self._params_area = QScrollArea()
+        self._params_area.setWidgetResizable(True)
+        self._params_widget = QWidget()
+        self._params_layout = QVBoxLayout(self._params_widget)
+        self._params_layout.setAlignment(Qt.AlignmentFlag.AlignTop)
+        self._params_area.setWidget(self._params_widget)
+        right_layout.addWidget(self._params_area)
+
+        splitter.addWidget(right)
+
+        splitter.setSizes([250, 300, 350])
+        root.addWidget(splitter, 1)
+
+    # ---- 目录树 ----
+    def _populate_tree(self):
+        """填充特效分类树"""
+        # 导入所有特效模块以触发注册
+        from app.effects import time, spatial, color, blur_noise, overlay, keying, audio, combo  # noqa: F401
+        cats = EffectRegistry.all_categories()
+        for cat, names in sorted(cats.items()):
+            cat_item = QTreeWidgetItem([cat])
+            cat_item.setFlags(cat_item.flags() & ~Qt.ItemFlag.ItemIsDragEnabled)
+            for name in sorted(names):
+                eff_cls = EffectRegistry.get(name)
+                desc = eff_cls.description if eff_cls else ""
+                child = QTreeWidgetItem([f"{name}", desc])
+                child.setData(0, Qt.ItemDataRole.UserRole, name)
+                cat_item.addChild(child)
+            self._tree.addTopLevelItem(cat_item)
+        self._tree.expandAll()
+
+    # ---- 特效操作 ----
+    def _add_effect(self, item: QTreeWidgetItem, col: int):
+        name = item.data(0, Qt.ItemDataRole.UserRole)
+        if not name:
+            return
+        eff = EffectRegistry.instantiate(name)
+        if eff:
+            self._pipeline.add(eff)
+            self._refresh_list()
+
+    def _remove_effect(self):
+        row = self._effect_list.currentRow()
+        if row >= 0:
+            self._pipeline.remove(row)
+            self._refresh_list()
+
+    def _move_effect(self, delta: int):
+        row = self._effect_list.currentRow()
+        new_row = row + delta
+        if 0 <= row < len(self._pipeline) and 0 <= new_row < len(self._pipeline):
+            self._pipeline.move(row, new_row)
+            self._refresh_list()
+            self._effect_list.setCurrentRow(new_row)
+
+    def _on_reorder(self):
+        """拖拽排序后的处理"""
+        items = []
+        for i in range(self._effect_list.count()):
+            items.append(self._effect_list.item(i).data(Qt.ItemDataRole.UserRole))
+        for i, effect in enumerate(items):
+            if self._pipeline[i] is not effect:
+                self._pipeline.move(self._pipeline._effects.index(effect), i)
+        self._refresh_params()
+
+    def _on_select(self, item: QListWidgetItem):
+        idx = self._effect_list.row(item)
+        if 0 <= idx < len(self._pipeline):
+            self._show_params(idx)
+
+    def _refresh_list(self):
+        """刷新已添加特效列表"""
+        self._effect_list.clear()
+        for i, eff in enumerate(self._pipeline):
+            text = f"{'✅' if eff.enabled else '❌'} {eff.name}"
+            item = QListWidgetItem(text)
+            item.setData(Qt.ItemDataRole.UserRole, eff)
+            self._effect_list.addItem(item)
+
+    def _show_params(self, idx: int):
+        """显示指定特效的参数面板"""
+        # 清除旧控件
+        while self._params_layout.count():
+            child = self._params_layout.takeAt(0)
+            if child.widget():
+                child.widget().deleteLater()
+
+        if idx < 0 or idx >= len(self._pipeline):
+            return
+
+        effect = self._pipeline[idx]
+
+        # 启用/禁用复选框
+        from PyQt6.QtWidgets import QCheckBox
+        cb = QCheckBox("启用此特效")
+        cb.setChecked(effect.enabled)
+        cb.toggled.connect(lambda v: self._pipeline.toggle(idx, v) or self._refresh_list())
+        self._params_layout.addWidget(cb)
+
+        for p in effect.get_param_defs():
+            lbl = QLabel(f"{p.label}:")
+            lbl.setStyleSheet(f"color: {COLORS['text_secondary']}; font-size: 12px; margin-top: 6px;")
+            self._params_layout.addWidget(lbl)
+
+            if p.options:
+                from PyQt6.QtWidgets import QComboBox
+                w = QComboBox()
+                for val, lab in p.options:
+                    w.addItem(lab, val)
+                w.setCurrentIndex(max(0, [o[0] for o in p.options].index(effect.get_param(p.name))))
+                w.currentIndexChanged.connect(
+                    lambda i, n=p.name, opts=p.options: effect.set_param(n, opts[i][0]) or self.pipeline_changed.emit()
+                )
+                self._params_layout.addWidget(w)
+            elif p.param_type is float:
+                from PyQt6.QtWidgets import QDoubleSpinBox
+                w = QDoubleSpinBox()
+                if p.min_val is not None: w.setRange(p.min_val, p.max_val or 100)
+                if p.step: w.setSingleStep(p.step)
+                w.setValue(effect.get_param(p.name) or 0)
+                if p.suffix: w.setSuffix(f" {p.suffix}")
+                w.valueChanged.connect(lambda v, n=p.name: effect.set_param(n, v) or self.pipeline_changed.emit())
+                self._params_layout.addWidget(w)
+            elif p.param_type is int:
+                from PyQt6.QtWidgets import QSpinBox
+                w = QSpinBox()
+                if p.min_val is not None: w.setRange(int(p.min_val), int(p.max_val or 100))
+                w.setValue(effect.get_param(p.name) or 0)
+                if p.suffix: w.setSuffix(f" {p.suffix}")
+                w.valueChanged.connect(lambda v, n=p.name: effect.set_param(n, v) or self.pipeline_changed.emit())
+                self._params_layout.addWidget(w)
+            elif p.param_type is str:
+                from PyQt6.QtWidgets import QLineEdit
+                w = QLineEdit(str(effect.get_param(p.name) or ""))
+                w.textChanged.connect(lambda v, n=p.name: effect.set_param(n, v) or self.pipeline_changed.emit())
+                self._params_layout.addWidget(w)
+
+    def _refresh_params(self):
+        row = self._effect_list.currentRow()
+        if row >= 0:
+            self._show_params(row)
+
+    # ---- 公开 ----
+    def get_pipeline(self) -> EffectPipeline:
+        return self._pipeline

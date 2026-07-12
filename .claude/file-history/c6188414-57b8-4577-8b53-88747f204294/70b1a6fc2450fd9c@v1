@@ -1,0 +1,37 @@
+package com.example.magicpinao.core.data
+
+import androidx.room.Entity
+import androidx.room.PrimaryKey
+import java.util.UUID
+
+/**
+ * 琴键坐标实体类
+ * 存储目标应用中每个琴键的屏幕坐标
+ */
+@Entity(tableName = "coordinates")
+data class CoordinateEntity(
+    @PrimaryKey
+    val id: String = UUID.randomUUID().toString(),
+    val deviceId: String,           // 设备标识（包名+分辨率）
+    val packageName: String,        // 目标应用包名
+    val appName: String,            // 应用名称
+    val screenWidth: Int,           // 屏幕宽度
+    val screenHeight: Int,          // 屏幕高度
+    val keyCount: Int = 21,         // 琴键数量
+    val keyCoordinates: String,     // JSON数组，存储所有琴键坐标
+    val calibrationMode: String,    // 标定方式：AUTO_DETECT/BOUNDARY/REGION_SCAN/MANUAL
+    val createdAt: Long = System.currentTimeMillis(),
+    val updatedAt: Long = System.currentTimeMillis()
+)
+
+/**
+ * 单个琴键坐标
+ */
+data class PianoKeyCoordinate(
+    val keyIndex: Int,              // 琴键索引（0-20）
+    val noteNumber: Int,            // MIDI音符编号
+    val centerX: Int,               // 中心X坐标
+    val centerY: Int,               // 中心Y坐标
+    val width: Int,                 // 宽度
+    val height: Int                 // 高度
+)

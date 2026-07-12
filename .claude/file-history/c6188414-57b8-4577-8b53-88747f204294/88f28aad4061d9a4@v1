@@ -1,0 +1,85 @@
+package com.example.magicpinao.core.accessibility
+
+data class TargetApp(
+    val packageName: String,
+    val appName: String,
+    val keyCount: Int = 21,
+    val baseNote: Int = 60,
+    val description: String = "",
+    val whiteKeysOnly: Boolean = false,  // true=仅白键（如原神风物琴），false=连续半音
+    val rowCount: Int = 1                // 键盘排数：1=单排，3=三排（如原神风物琴）
+)
+
+object SupportedApps {
+
+    val apps = listOf(
+        TargetApp(
+            packageName = "com.miHoYo.GenshinImpact",
+            appName = "原神 Genshin Impact",
+            keyCount = 21,
+            baseNote = 48,  // C3, 最低音
+            description = "原神游戏内置风物之诗琴",
+            whiteKeysOnly = true,  // C3-B5 白键，3个八度21键
+            rowCount = 3           // 三排键（高音/中音/低音各7键）
+        ),
+        TargetApp(
+            packageName = "com.miHoYo.ys.music",
+            appName = "Genshin Piano (fan-made)",
+            keyCount = 21,
+            baseNote = 48,  // C3
+            description = "原神钢琴模拟器",
+            whiteKeysOnly = true,
+            rowCount = 3
+        ),
+        TargetApp(
+            packageName = "com.sky.xlzq",
+            appName = "光遇 Sky Piano",
+            keyCount = 15,
+            baseNote = 60,
+            description = "光遇游戏内置钢琴"
+        ),
+        TargetApp(
+            packageName = "com.tgc.sky.android",
+            appName = "光遇 Sky (完整版)",
+            keyCount = 15,
+            baseNote = 60,
+            description = "光遇完整游戏"
+        ),
+        TargetApp(
+            packageName = "com.any.piano",
+            appName = "通用钢琴应用",
+            keyCount = 21,
+            baseNote = 60,
+            description = "任何钢琴应用（需手动标定）"
+        )
+    )
+
+    fun findByPackage(packageName: String): TargetApp? = apps.find { it.packageName == packageName }
+    fun getDefault(): TargetApp = apps.first()
+
+    /**
+     * 获取当前前台运行的钢琴应用
+     */
+    fun getCurrentForeground(): TargetApp? {
+        val service = PianoAccessibilityService.instance ?: return null
+        val root = service.rootInActiveWindow ?: return null
+        val pkg = root.packageName?.toString()
+        root.recycle()
+        if (pkg == null) return null
+        // 排除自身
+        if (pkg == "com.example.magicpinao") return null
+        return apps.find { it.packageName == pkg }
+            ?: TargetApp(pkg, "当前应用 ($pkg)", 21, 48, "自动检测到的应用", whiteKeysOnly = true, rowCount = 3)
+    }
+
+    /**
+     * 获取前台应用包名
+     */
+    fun getForegroundPackage(): String? {
+        val service = PianoAccessibilityService.instance ?: return null
+        val root = service.rootInActiveWindow ?: return null
+        val pkg = root.packageName?.toString()
+        root.recycle()
+        return if (pkg == "com.example.magicpinao") null else pkg
+    }
+}

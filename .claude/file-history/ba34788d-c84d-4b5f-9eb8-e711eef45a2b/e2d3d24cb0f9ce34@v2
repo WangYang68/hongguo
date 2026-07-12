@@ -1,0 +1,103 @@
+"""
+FFmpeg 进度解析器
+从 stderr 或 pipe 输出中解析处理进度
+【开发状态：已完成】
+"""
+
+import re
+from dataclasses import dataclass
+
+
+@dataclass
+class ProgressState:
+    time_sec: float = 0.0
+    fps: float = 0.0
+    speed: float = 0.0
+    frame: int = 0
+
+# 解析 -progress pipe:1 输出（更精确）
+_PROGRESS_RE = re.compile(r"^(\w+)=(.+)$")
+
+# 解析 stderr 输出（兼容旧版）
+_TIME_RE = re.compile(r"time=(\d+):(\d+):(\d+)\.(\d+)")
+_FPS_RE = re.compile(r"fps=\s*(\d+\.?\d*)")
+_SPEED_RE = re.compile(r"speed=\s*(\d+\.?\d*)x")
+_FRAME_RE = re.compile(r"frame=\s*(\d+)")
+
+
+def parse_progress_line(line: str, state: dict | None = None) -> dict | None:
+    """
+    解析单行 -progress pipe:1 输出。
+    多行累积后返回完整 ProgressState dict。
+
+    返回: {"time_sec": float, "fps": float, "speed": float, "frame": int} 或 None
+    """
+    if state is None:
+        state = {}
+
+    m = _PROGRESS_RE.match(line.strip())
+    if not m:
+        return None
+
+    key, val = m.groups()
+    val = val.strip()
+
+    if key == "out_time_ms":
+        try:
+            state["time_sec"] = int(val) / 1_000_000
+        except ValueError:
+            pass
+    elif key == "out_time":
+        # 格式: HH:MM:SS.microseconds
+        tm = _TIME_RE.match(val)
+        if tm:
+            h, m_, s, us = map(int, tm.groups())
+            state["time_sec"] = h * 3600 + m_ * 60 + s + us / 100
+    elif key == "fps":
+        try:
+            state["fps"] = float(val)
+        except ValueError:
+            pass
+    elif key == "speed":
+        val = val.rstrip("x")
+        try:
+            state["speed"] = float(val)
+        except ValueError:
+            pass
+    elif key == "frame":
+        try:
+            state["frame"] = int(val)
+        except ValueError:
+            pass
+    elif key == "progress":
+        if val == "end":
+            state["_finished"] = True
+        return dict(state)  # 每条 progress= 记录标志一行结束
+
+    return None
+
+
+def parse_stderr_line(line: str) -> ProgressState | None:
+    """从 stderr 行解析进度（兼容旧版 FFmpeg 输出）"""
+    state = ProgressState()
+
+    tm = _TIME_RE.search(line)
+    if tm:
+        h, m_, s, us = map(int, tm.groups())
+        state.time_sec = h * 3600 + m_ * 60 + s + us / 100
+
+    fps_m = _FPS_RE.search(line)
+    if fps_m:
+        state.fps = float(fps_m.group(1))
+
+    speed_m = _SPEED_RE.search(line)
+    if speed_m:
+        state.speed = float(speed_m.group(1))
+
+    frame_m = _FRAME_RE.search(line)
+    if frame_m:
+        state.frame = int(frame_m.group(1))
+
+    if state.time_sec > 0 or state.frame > 0:
+        return state
+    return None

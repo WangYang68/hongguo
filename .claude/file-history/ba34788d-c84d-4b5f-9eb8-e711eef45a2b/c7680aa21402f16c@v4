@@ -1,0 +1,262 @@
+"""
+VideoPreview — 视频播放预览控件
+基于 FFmpeg pipe 逐帧解码 + QLabel 显示，兼容所有格式
+支持播放/暂停/快进/seek
+【开发状态：已完成】
+"""
+
+import os
+import subprocess
+import sys
+import time
+import numpy as np
+from PyQt6.QtWidgets import (
+    QWidget, QVBoxLayout, QHBoxLayout, QLabel,
+    QPushButton, QSlider,
+)
+from PyQt6.QtCore import Qt, QTimer, pyqtSignal
+from PyQt6.QtGui import QImage, QPixmap
+
+from app.theme import COLORS
+from app.settings import FFMPEG_PATH, FFPROBE_PATH
+from app.utils.file_utils import format_duration
+
+
+class VideoPreview(QWidget):
+    """FFmpeg 帧播放器 — 兼容所有视频格式"""
+
+    position_changed = pyqtSignal(float)  # 当前播放位置(秒)
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self._filepath = ""
+        self._duration = 0.0
+        self._fps = 30.0
+        self._width = 640
+        self._height = 360
+        self._position = 0.0
+        self._playing = False
+        self._seeking = False
+        self._init_ui()
+        self._init_timers()
+
+    def _init_ui(self):
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.setSpacing(6)
+
+        # 画面
+        self._frame_label = QLabel("📺 请加载视频")
+        self._frame_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self._frame_label.setMinimumHeight(300)
+        self._frame_label.setStyleSheet(f"""
+            QLabel {{
+                background-color: #000;
+                border: 1px solid {COLORS['border']};
+                border-radius: 8px;
+                color: {COLORS['text_muted']};
+                font-size: 16px;
+            }}
+        """)
+        layout.addWidget(self._frame_label, 1)
+
+        # 控制栏
+        ctrl = QHBoxLayout()
+        ctrl.setSpacing(10)
+
+        self._play_btn = QPushButton("▶")
+        self._play_btn.setFixedSize(40, 40)
+        self._play_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        self._play_btn.clicked.connect(self._toggle_play)
+        self._play_btn.setStyleSheet(f"""
+            QPushButton {{
+                background-color: {COLORS['accent']}; color: #fff;
+                border-radius: 20px; font-size: 18px; font-weight: bold;
+            }}
+            QPushButton:hover {{ background-color: {COLORS['accent_hover']}; }}
+        """)
+        ctrl.addWidget(self._play_btn)
+
+        self._time_label = QLabel("00:00 / 00:00")
+        self._time_label.setStyleSheet(f"color: {COLORS['text_secondary']}; font-size: 13px; font-weight: 500; min-width: 120px;")
+        ctrl.addWidget(self._time_label)
+
+        self._seek = QSlider(Qt.Orientation.Horizontal)
+        self._seek.setRange(0, 10000)
+        self._seek.sliderPressed.connect(self._on_seek_press)
+        self._seek.sliderReleased.connect(self._on_seek_release)
+        self._seek.sliderMoved.connect(self._on_seek_move)
+        ctrl.addWidget(self._seek, 1)
+
+        layout.addLayout(ctrl)
+
+    def _init_timers(self):
+        # 播放定时器：按帧率刷新
+        self._play_timer = QTimer(self)
+        self._play_timer.timeout.connect(self._on_play_tick)
+
+    # ===== 公开方法 =====
+    def load_video(self, filepath: str):
+        """加载视频文件"""
+        self._playing = False
+        self._play_timer.stop()
+        self._play_btn.setText("▶")
+        self._filepath = filepath
+
+        if not os.path.exists(filepath):
+            return
+
+        # ffprobe 获取视频信息
+        self._probe_video(filepath)
+        self._position = 0.0
+        self._seek.setValue(0)
+        self._update_time()
+        self._show_frame(0)
+
+    def set_position(self, sec: float):
+        self._position = max(0, min(sec, self._duration))
+        self._show_frame(self._position)
+        self._update_time()
+
+    def get_position(self) -> float:
+        return self._position
+
+    def get_duration(self) -> float:
+        return self._duration
+
+    # ===== 播放控制 =====
+    def _toggle_play(self):
+        if not self._filepath:
+            return
+        if self._playing:
+            self._playing = False
+            self._play_timer.stop()
+            self._play_btn.setText("▶")
+        else:
+            if self._position >= self._duration - 0.1:
+                self._position = 0
+            self._playing = True
+            self._play_timer.start(int(1000 / self._fps))
+            self._play_btn.setText("⏸")
+
+    def _on_play_tick(self):
+        if not self._playing:
+            return
+        self._position += 1.0 / self._fps
+        if self._position >= self._duration:
+            self._position = 0
+            self._playing = False
+            self._play_timer.stop()
+            self._play_btn.setText("▶")
+
+        self._show_frame(self._position)
+        self._update_time()
+        self.position_changed.emit(self._position)
+
+    # ===== Seek =====
+    def _on_seek_press(self):
+        self._seeking = True
+        if self._playing:
+            self._play_timer.stop()
+
+    def _on_seek_release(self):
+        self._seeking = False
+        val = self._seek.value()
+        self._position = val / 10000.0 * self._duration
+        self._show_frame(self._position)
+        self._update_time()
+        if self._playing:
+            self._play_timer.start(int(1000 / self._fps))
+
+    def _on_seek_move(self, val: int):
+        t = val / 10000.0 * self._duration
+        self._time_label.setText(f"{format_duration(t)} / {format_duration(self._duration)}")
+
+    # ===== 帧提取 =====
+    def _show_frame(self, time_sec: float):
+        """通过 FFmpeg pipe 提取一帧并显示"""
+        if not self._filepath:
+            return
+
+        # 缩放到显示区域大小
+        display_w = max(self._frame_label.width(), 320)
+        display_h = max(self._frame_label.height(), 180)
+
+        cmd = [
+            FFMPEG_PATH, "-y",
+            "-ss", str(time_sec),
+            "-i", str(self._filepath),
+            "-vframes", "1",
+            "-f", "rawvideo",
+            "-pix_fmt", "rgb24",
+            "-vf", f"scale={display_w}:{display_h}:force_original_aspect_ratio=decrease,pad={display_w}:{display_h}:(ow-iw)/2:(oh-ih)/2",
+            "-",
+        ]
+
+        try:
+            proc = subprocess.run(
+                cmd, capture_output=True, timeout=10,
+                creationflags=subprocess.CREATE_NO_WINDOW if sys.platform == "win32" else 0,
+            )
+            if proc.returncode != 0 or len(proc.stdout) == 0:
+                return
+
+            img = QImage(
+                proc.stdout, display_w, display_h, display_w * 3,
+                QImage.Format.Format_RGB888,
+            )
+            if not img.isNull():
+                self._frame_label.setPixmap(QPixmap.fromImage(img))
+
+        except (subprocess.TimeoutExpired, FileNotFoundError):
+            pass
+
+    def _probe_video(self, filepath: str):
+        """用 ffprobe 获取视频元数据"""
+        cmd = [
+            FFPROBE_PATH, "-v", "quiet",
+            "-print_format", "json",
+            "-show_format", "-show_streams",
+            str(filepath),
+        ]
+        try:
+            import json
+            proc = subprocess.run(
+                cmd, capture_output=True,
+                encoding="utf-8", errors="replace", timeout=15,
+                creationflags=subprocess.CREATE_NO_WINDOW if sys.platform == "win32" else 0,
+            )
+            if proc.returncode == 0:
+                data = json.loads(proc.stdout)
+                fmt = data.get("format", {})
+                self._duration = float(fmt.get("duration", 0))
+
+                for s in data.get("streams", []):
+                    if s.get("codec_type") == "video":
+                        self._width = s.get("width", 640)
+                        self._height = s.get("height", 360)
+                        rfr = s.get("r_frame_rate", "30/1")
+                        if "/" in rfr:
+                            a, b = rfr.split("/")
+                            try:
+                                self._fps = float(a) / float(b)
+                            except (ValueError, ZeroDivisionError):
+                                self._fps = 30.0
+                        break
+        except Exception:
+            pass
+
+    def _update_time(self):
+        self._time_label.setText(
+            f"{format_duration(self._position)} / {format_duration(self._duration)}"
+        )
+        if not self._seeking:
+            val = int(self._position / max(self._duration, 0.01) * 10000)
+            self._seek.blockSignals(True)
+            self._seek.setValue(val)
+            self._seek.blockSignals(False)
+
+    def resizeEvent(self, event):
+        super().resizeEvent(event)
+        if self._filepath and not self._playing:
+            self._show_frame(self._position)

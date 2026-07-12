@@ -1,0 +1,480 @@
+"""
+快手视频/图集解析与下载模块
+基于 SSR 页面正则提取，无需 Cookie 和登录
+原理：URL → 请求 SSR 页面 → 正则提取内嵌 JSON 字段 → 无水印播放地址
+"""
+
+import json
+import re
+import time
+import logging
+from pathlib import Path
+from typing import Optional
+from urllib.parse import urlparse
+
+import requests
+
+logger = logging.getLogger("kuaishou")
+
+DEFAULT_HEADERS = {
+    "User-Agent": (
+        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+        "AppleWebKit/537.36 (KHTML, like Gecko) "
+        "Chrome/122.0.0.0 Safari/537.36"
+    ),
+    "Accept": "text/html,application/json,*/*",
+    "Accept-Language": "zh-CN,zh;q=0.9,en;q=0.8",
+    "Connection": "keep-alive",
+}
+
+MOBILE_HEADERS = {
+    "User-Agent": (
+        "Mozilla/5.0 (iPhone; CPU iPhone OS 16_0 like Mac OS X) "
+        "AppleWebKit/605.1.15 (KHTML, like Gecko) Version/16.0 "
+        "Mobile/15E148 Safari/604.1"
+    ),
+    "Accept-Language": "zh-CN,zh;q=0.9,en;q=0.8",
+    "Referer": "https://www.kuaishou.com/",
+}
+
+# 快手域名列表
+KUAISHOU_DOMAINS = [
+    "kuaishou.com", "v.kuaishou.com",
+    "www.kuaishou.com", "m.kuaishou.com",
+    "live.kuaishou.com",
+]
+
+_URL_PATTERN = re.compile(r"https?://[^\s]+", re.IGNORECASE)
+
+
+def is_kuaishou_url(url: str) -> bool:
+    """判断是否为快手链接"""
+    try:
+        host = urlparse(url).netloc.lower()
+        return any(d in host for d in KUAISHOU_DOMAINS)
+    except Exception:
+        return False
+
+
+class KuaishouParser:
+    """快手视频/图集解析器，无需 Cookie"""
+
+    def __init__(self, download_dir: str = "downloads"):
+        self.download_dir = Path(download_dir)
+        self.download_dir.mkdir(parents=True, exist_ok=True)
+        self.session = requests.Session()
+        self.session.headers.update(DEFAULT_HEADERS)
+        self.timeout = (10, 30)
+        self.max_retries = 3
+
+    def parse(self, url: str) -> dict:
+        """解析快手视频/图集信息，返回统一格式"""
+        share_url = self._extract_url(url)
+
+        # 如果是短链接，先解析重定向获取真实 URL
+        resolved_url = self._resolve_short_link(share_url)
+        if resolved_url:
+            share_url = resolved_url
+
+        html = self._fetch_page(share_url)
+        photo_data = self._extract_photo_data(html)
+
+        if not photo_data or not photo_data.get("photoId"):
+            raise ValueError("无法从页面中提取视频信息，请确认链接有效")
+
+        return self._build_result(photo_data)
+
+    def download(self, url: str, mode: str = "video") -> dict:
+        """下载快手视频，返回文件路径"""
+        share_url = self._extract_url(url)
+        resolved_url = self._resolve_short_link(share_url)
+        if resolved_url:
+            share_url = resolved_url
+
+        html = self._fetch_page(share_url)
+        photo_data = self._extract_photo_data(html)
+
+        if not photo_data:
+            raise ValueError("无法从页面中提取视频信息")
+
+        media_url = self._get_media_url(photo_data, mode)
+        caption = photo_data.get("caption") or f"kuaishou_{photo_data.get('photoId', 'video')}"
+        safe_title = re.sub(r'[\\/*?:"<>|\n\r\t#@]', "_", caption).strip("_. ")[:60]
+        safe_title = re.sub(r'_+', '_', safe_title)
+        if not safe_title:
+            safe_title = f"kuaishou_{photo_data.get('photoId', 'video')}"
+
+        ext = ".mp4" if mode == "video" else ".mp3"
+        filename = f"{safe_title}{ext}"
+        filepath = self.download_dir / filename
+
+        self._download_file(media_url, filepath)
+
+        return {
+            "filepath": str(filepath),
+            "filename": filename,
+            "title": caption,
+            "ext": ext.lstrip("."),
+        }
+
+    # ------------------------------------------------------------------
+    # 内部方法
+    # ------------------------------------------------------------------
+
+    def _extract_url(self, text: str) -> str:
+        """从文本中提取快手链接"""
+        match = _URL_PATTERN.search(text)
+        if not match:
+            raise ValueError("未找到有效的快手链接")
+        candidate = match.group(0).strip().strip('"').strip("'")
+        return candidate.rstrip(").,;!?")
+
+    def _resolve_short_link(self, url: str) -> Optional[str]:
+        """解析 v.kuaishou.com 短链接重定向"""
+        parsed = urlparse(url)
+        if "v.kuaishou.com" not in (parsed.netloc or ""):
+            return None
+
+        for attempt in range(self.max_retries):
+            try:
+                resp = self.session.get(
+                    url, timeout=self.timeout,
+                    allow_redirects=True, headers=MOBILE_HEADERS,
+                )
+                resp.raise_for_status()
+                final_url = resp.url
+                if final_url != url:
+                    logger.info("短链接重定向: %s -> %s", url, final_url)
+                    return final_url
+                return None
+            except requests.RequestException as e:
+                if attempt == self.max_retries - 1:
+                    logger.warning("短链接解析失败: %s", e)
+                    return None
+                time.sleep(1 * (2 ** attempt))
+        return None
+
+    def _fetch_page(self, url: str) -> str:
+        """获取快手分享页 HTML（SSR 版本，包含内嵌数据）"""
+        for attempt in range(self.max_retries):
+            try:
+                resp = self.session.get(
+                    url, timeout=self.timeout,
+                    allow_redirects=True, headers=MOBILE_HEADERS,
+                )
+                resp.raise_for_status()
+                return resp.text or ""
+            except requests.RequestException as e:
+                if attempt == self.max_retries - 1:
+                    raise ValueError(f"页面请求失败: {e}")
+                time.sleep(1 * (2 ** attempt))
+        return ""
+
+    # ------------------------------------------------------------------
+    # 数据提取
+    # ------------------------------------------------------------------
+
+    def _extract_photo_data(self, html: str) -> dict:
+        """从 SSR HTML 中提取视频/图集数据"""
+        if not html:
+            return {}
+
+        # 主要方法：逐个字段正则提取（最可靠）
+        data = self._extract_by_regex_fields(html)
+        if data.get("photoId"):
+            return data
+
+        # fallback: 尝试从 window.INIT_STATE 解码
+        return self._extract_from_init_state(html)
+
+    def _extract_by_regex_fields(self, html: str) -> dict:
+        """逐个字段用正则从 HTML 中提取"""
+        result: dict = {}
+
+        # --- 字符串字段 ---
+        str_fields = [
+            ("photoId", r'"photoId"\s*:\s*"([^"]*)"'),
+            ("caption", r'"caption"\s*:\s*"([^"]*)"'),
+            ("userName", r'"userName"\s*:\s*"([^"]*)"'),
+            ("userEid", r'"userEid"\s*:\s*"([^"]*)"'),
+            ("photoType", r'"photoType"\s*:\s*"([^"]*)"'),
+            ("headUrl", r'"headUrl"\s*:\s*"([^"]*)"'),
+            ("userSex", r'"userSex"\s*:\s*"([^"]*)"'),
+            ("videoId", r'"videoId"\s*:\s*"([^"]*)"'),
+        ]
+        for key, pattern in str_fields:
+            m = re.search(pattern, html)
+            if m:
+                result[key] = m.group(1)
+
+        # --- 整数字段 ---
+        # 注意：duration 在页面中可能出现多次（预览值 30000 vs 实际值 193333）
+        # 使用出现在 timestamp/userName/likeCount 附近的 duration（主视频数据）
+        dur_match = re.search(
+            r'"timestamp"\s*:\s*\d+.*?"duration"\s*:\s*(\d+)', html, re.DOTALL
+        )
+        if dur_match:
+            result["duration"] = int(dur_match.group(1))
+        else:
+            m = re.search(r'"duration"\s*:\s*(\d+)', html)
+            if m:
+                result["duration"] = int(m.group(1))
+
+        int_fields = [
+            ("likeCount", r'"likeCount"\s*:\s*(\d+)'),
+            ("viewCount", r'"viewCount"\s*:\s*(\d+)'),
+            ("commentCount", r'"commentCount"\s*:\s*(\d+)'),
+            ("timestamp", r'"timestamp"\s*:\s*(\d+)'),
+            ("mediaType", r'"mediaType"\s*:\s*(\d+)'),
+        ]
+        for key, pattern in int_fields:
+            m = re.search(pattern, html)
+            if m:
+                result[key] = int(m.group(1))
+
+        # --- 宽高：优先 ext_params 中的 w/h（视频实际分辨率），其次 cccCoverMap（封面尺寸） ---
+        ext_match = re.search(r'"ext_params"\s*:\s*\{[^}]*"w"\s*:\s*(\d+)[^}]*"h"\s*:\s*(\d+)', html)
+        if ext_match:
+            result["width"] = int(ext_match.group(1))
+            result["height"] = int(ext_match.group(2))
+        else:
+            for key, pattern in [("width", r'"width"\s*:\s*(\d+)'), ("height", r'"height"\s*:\s*(\d+)')]:
+                m = re.search(pattern, html)
+                if m:
+                    result[key] = int(m.group(1))
+
+        # --- mainMvUrls 数组（无水印视频直链） ---
+        mv_match = re.search(r'"mainMvUrls"\s*:\s*(\[[^\]]*\])', html)
+        if mv_match:
+            try:
+                result["mainMvUrls"] = json.loads(mv_match.group(1))
+            except json.JSONDecodeError:
+                pass
+
+        # --- 封面图：从 overrideCoverUrls 或页面图片 URL 中提取 ---
+        cover_url = self._extract_cover_url(html)
+        if cover_url:
+            result["_cover_url"] = cover_url
+
+        # --- 提取所有媒体 URL 作为备用 ---
+        img_urls = set()
+        for m in re.finditer(
+            r'https?://[^"\s]+\.(?:jpg|jpeg|png|webp|mp4)[^"\s]*',
+            html, re.IGNORECASE,
+        ):
+            url = m.group(0)
+            if '\\' not in url and '&amp;' not in url:
+                img_urls.add(url)
+        if img_urls:
+            result["_image_urls"] = list(img_urls)
+
+        return result
+
+    def _extract_cover_url(self, html: str) -> str:
+        """从 HTML 中提取视频封面图 URL"""
+        # 方法 1: 从 overrideCoverUrls 的 jpg 列表中提取
+        cover_match = re.search(
+            r'"overrideCoverUrls"\s*:\s*\{\s*"jpgCdnNodeView"\s*:\s*\[([^\]]*)\]',
+            html,
+        )
+        if cover_match:
+            url_match = re.search(r'"url"\s*:\s*"([^"]*)"', cover_match.group(1))
+            if url_match:
+                return url_match.group(1)
+
+        # 方法 2: 查找带有 clientCacheKey 的封面 jpg（通常是最清晰的封面图）
+        for m in re.finditer(
+            r'https?://[^"\s]*\.jpg\?clientCacheKey=[^"\s]*_ccc[^"\s]*',
+            html,
+        ):
+            return m.group(0)
+
+        # 方法 3: 查找以 _B 开头的封面 jpg（无水印大图）
+        for m in re.finditer(
+            r'https?://[^"\s]*_B[^"\s]*\.jpg[^"\s]*',
+            html,
+        ):
+            return m.group(0)
+
+        return ""
+
+    def _extract_from_init_state(self, html: str) -> dict:
+        """从 window.INIT_STATE 中解码提取数据（备用方案）"""
+        idx = html.find("window.INIT_STATE = ")
+        if idx < 0:
+            return {}
+
+        end = html.find("</script>", idx)
+        if end < 0:
+            return {}
+
+        encoded = html[idx + len("window.INIT_STATE = "):end].strip()
+        if not encoded:
+            return {}
+
+        decoded = self._decode_init_state(encoded)
+        try:
+            return json.loads(decoded)
+        except json.JSONDecodeError:
+            return {}
+
+    @staticmethod
+    def _decode_init_state(s: str) -> str:
+        """解码 INIT_STATE ROT-1 编码"""
+        result = []
+        in_string = False
+        escape_next = False
+
+        for ch in s:
+            if escape_next:
+                result.append(ch)
+                escape_next = False
+                continue
+
+            if ch == '\\':
+                result.append(ch)
+                escape_next = True
+                continue
+
+            if ch == '"':
+                in_string = not in_string
+                result.append(ch)
+                continue
+
+            if in_string:
+                result.append(chr(ord(ch) - 1))
+            else:
+                result.append(ch)
+
+        return ''.join(result)
+
+    # ------------------------------------------------------------------
+    # 结果构建
+    # ------------------------------------------------------------------
+
+    def _get_media_url(self, photo_data: dict, mode: str = "video") -> str:
+        """提取无水印播放地址"""
+        if mode == "video":
+            main_mv = photo_data.get("mainMvUrls", [])
+            if main_mv and isinstance(main_mv, list) and len(main_mv) > 0:
+                return main_mv[0].get("url", "")
+
+            img_urls = photo_data.get("_image_urls", [])
+            for u in img_urls:
+                if u.endswith(".mp4"):
+                    return u
+
+            raise ValueError("未找到视频播放地址")
+
+        if mode == "audio":
+            raise ValueError("快手暂不支持纯音频下载，请下载视频后自行提取")
+
+        raise ValueError(f"不支持的模式: {mode}")
+
+    def _get_thumbnail(self, photo_data: dict) -> str:
+        """提取封面图地址"""
+        # 优先使用专用封面提取结果
+        cover = photo_data.get("_cover_url", "")
+        if cover:
+            return cover
+
+        # fallback: 从 _image_urls 中选第一张 jpg
+        img_urls = photo_data.get("_image_urls", [])
+        for u in img_urls:
+            if ".jpg" in u:
+                return u
+        return ""
+
+    def _build_result(self, photo_data: dict) -> dict:
+        """构建统一格式的解析结果"""
+        photo_id = photo_data.get("photoId", "")
+        caption = photo_data.get("caption") or f"快手视频_{photo_id}"
+        user_name = photo_data.get("userName", "快手用户")
+        duration_ms = photo_data.get("duration", 0)
+        duration_sec = duration_ms // 1000 if duration_ms > 1000 else duration_ms
+
+        # 视频 URL
+        video_url = ""
+        main_mv = photo_data.get("mainMvUrls", [])
+        if main_mv and isinstance(main_mv, list) and len(main_mv) > 0:
+            video_url = main_mv[0].get("url", "")
+
+        # 封面
+        thumbnail = self._get_thumbnail(photo_data)
+
+        # 宽高
+        width = photo_data.get("width", 0)
+        height = photo_data.get("height", 0)
+
+        formats = []
+        if video_url:
+            formats.append({
+                "format_id": "kuaishou_nowm",
+                "ext": "mp4",
+                "resolution": f"{width}x{height}" if width and height else "原始",
+                "height": height or 720,
+                "filesize": None,
+                "filesize_approx": None,
+                "vcodec": "h264",
+                "acodec": "aac",
+                "has_audio": True,
+                "label": f"无水印 MP4 ({height}p)" if height else "无水印 MP4 (原始画质)",
+                "_direct_url": video_url,
+            })
+
+        # 时间戳
+        ts = photo_data.get("timestamp", 0)
+        upload_date = ""
+        if ts:
+            try:
+                from datetime import datetime
+                upload_date = datetime.fromtimestamp(ts / 1000).strftime("%Y%m%d")
+            except (ValueError, OSError):
+                pass
+
+        return {
+            "id": photo_id,
+            "title": caption,
+            "thumbnail": thumbnail,
+            "duration": duration_sec,
+            "duration_string": self._fmt_duration(duration_sec),
+            "uploader": user_name,
+            "platform": "快手",
+            "view_count": photo_data.get("viewCount") or photo_data.get("likeCount"),
+            "upload_date": upload_date,
+            "description": caption[:200],
+            "formats": formats,
+            "subtitles": [],
+            "automatic_captions": [],
+            "_photo_type": photo_data.get("photoType", ""),
+            "_media_type": photo_data.get("mediaType", 0),
+        }
+
+    @staticmethod
+    def _fmt_duration(seconds: Optional[int]) -> str:
+        if not seconds:
+            return "00:00"
+        m, s = divmod(int(seconds), 60)
+        h, m = divmod(m, 60)
+        return f"{h}:{m:02d}:{s:02d}" if h else f"{m}:{s:02d}"
+
+    def _download_file(self, url: str, filepath: Path, chunk_size: int = 64 * 1024):
+        """下载文件到本地"""
+        for attempt in range(self.max_retries):
+            try:
+                resp = self.session.get(
+                    url, stream=True, timeout=self.timeout, allow_redirects=True,
+                )
+                resp.raise_for_status()
+
+                temp_path = filepath.with_suffix(filepath.suffix + ".part")
+                with temp_path.open("wb") as f:
+                    for chunk in resp.iter_content(chunk_size=chunk_size):
+                        if chunk:
+                            f.write(chunk)
+                temp_path.replace(filepath)
+                return
+            except Exception as e:
+                if attempt == self.max_retries - 1:
+                    raise ValueError(f"文件下载失败: {e}")
+                time.sleep(1 * (2 ** attempt))

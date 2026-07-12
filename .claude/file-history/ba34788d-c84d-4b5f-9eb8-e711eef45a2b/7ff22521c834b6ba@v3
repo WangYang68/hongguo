@@ -1,0 +1,61 @@
+"""
+系统环境检查
+【开发状态：已完成】
+"""
+
+import shutil
+import subprocess
+import sys
+from app.settings import FFMPEG_PATH, FFPROBE_PATH
+
+
+def check_ffmpeg() -> dict:
+    """
+    检查 FFmpeg 是否可用。
+    返回 {"ok": bool, "ffmpeg": str, "ffprobe": str, "version": str, "message": str}
+    """
+    result = {"ok": False, "ffmpeg": FFMPEG_PATH, "ffprobe": FFPROBE_PATH, "version": "", "message": ""}
+
+    ffmpeg_ok = False
+    try:
+        proc = subprocess.run(
+            [FFMPEG_PATH, "-version"], capture_output=True,
+            encoding="utf-8", errors="replace", timeout=10,
+            creationflags=subprocess.CREATE_NO_WINDOW if sys.platform == "win32" else 0,
+        )
+        if proc.returncode == 0:
+            result["version"] = proc.stdout.split("\n")[0] if proc.stdout else "unknown"
+            ffmpeg_ok = True
+    except (FileNotFoundError, subprocess.TimeoutExpired):
+        pass
+
+    ffprobe_ok = False
+    try:
+        proc = subprocess.run(
+            [FFPROBE_PATH, "-version"], capture_output=True,
+            encoding="utf-8", errors="replace", timeout=10,
+            creationflags=subprocess.CREATE_NO_WINDOW if sys.platform == "win32" else 0,
+        )
+        ffprobe_ok = proc.returncode == 0
+    except (FileNotFoundError, subprocess.TimeoutExpired):
+        pass
+
+    if ffmpeg_ok and ffprobe_ok:
+        result["ok"] = True
+        result["message"] = f"FFmpeg {result['version']} 就绪"
+    elif ffmpeg_ok and not ffprobe_ok:
+        result["message"] = "FFmpeg 可用，但 ffprobe 缺失"
+    elif not ffmpeg_ok:
+        result["message"] = "FFmpeg 未找到或无法运行，请在 PATH 中安装 ffmpeg"
+
+    return result
+
+
+def check_disk_space(path) -> int:
+    """返回可用磁盘空间（字节），-1 表示无法检测"""
+    try:
+        import shutil
+        usage = shutil.disk_usage(path)
+        return usage.free
+    except Exception:
+        return -1

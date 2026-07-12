@@ -1,0 +1,94 @@
+"""
+音频魔改特效：音高、回声、机器人、倒放、卡壳、声道摇摆
+【开发状态：已完成】
+"""
+
+from app.effects.base import BaseEffect, EffectParam
+
+
+class PitchShiftEffect(BaseEffect):
+    """音高调整"""
+    name = "音高调整"
+    category = "音频魔改"
+    description = "唐老鸭效果或大魔王效果"
+    status = "已完成"
+    @classmethod
+    def get_param_defs(cls):
+        return [EffectParam("pitch", "音高倍率", float, 1.5, 0.25, 4.0, 0.05, suffix="x")]
+    def get_filter_string(self, in_label="0:v", out_label="v0"):
+        return ""  # 仅音频
+    def get_audio_filter_string(self, in_label="0:a", out_label="a0"):
+        p = self.get_param("pitch") or 1.5
+        return f"[{in_label}]asetrate=44100*{p},aresample=44100,atempo=1.0[{out_label}]"
+
+
+class EchoEffect(BaseEffect):
+    """回声/混响"""
+    name = "回声混响"
+    category = "音频魔改"
+    description = "增加空间感和回音效果"
+    status = "已完成"
+    @classmethod
+    def get_param_defs(cls):
+        return [EffectParam("delay", "延迟(ms)", int, 300, 50, 2000, 50), EffectParam("decay", "衰减", float, 0.5, 0.1, 0.9, 0.1)]
+    def get_filter_string(self, in_label="0:v", out_label="v0"): return ""
+    def get_audio_filter_string(self, in_label="0:a", out_label="a0"):
+        d = self.get_param("delay") or 300
+        decay = self.get_param("decay") or 0.5
+        return f"[{in_label}]aecho=0.8:{decay}:{d}:{decay}[{out_label}]"
+
+
+class RobotVoiceEffect(BaseEffect):
+    """机器人音效"""
+    name = "机器人音效"
+    category = "音频魔改"
+    description = "金属质感的机器人声音"
+    status = "已完成"
+    @classmethod
+    def get_param_defs(cls): return []
+    def get_filter_string(self, in_label="0:v", out_label="v0"): return ""
+    def get_audio_filter_string(self, in_label="0:a", out_label="a0"):
+        return f"[{in_label}]acrusher=level_in=8:level_out=8:bits=4:mode=lin:dc=1[{out_label}]"
+
+
+class AudioReverseEffect(BaseEffect):
+    """音频倒放"""
+    name = "音频倒放"
+    category = "音频魔改"
+    description = "声音反向播放"
+    status = "已完成"
+    @classmethod
+    def get_param_defs(cls): return []
+    def get_filter_string(self, in_label="0:v", out_label="v0"): return ""
+    def get_audio_filter_string(self, in_label="0:a", out_label="a0"):
+        return f"[{in_label}]areverse[{out_label}]"
+
+
+class AudioStutterEffect(BaseEffect):
+    """音频卡壳"""
+    name = "音频卡壳"
+    category = "音频魔改"
+    description = "某段声音重复播放"
+    status = "已完成"
+    @classmethod
+    def get_param_defs(cls):
+        return [EffectParam("repeat", "重复次数", int, 4, 2, 10, 1)]
+    def get_filter_string(self, in_label="0:v", out_label="v0"): return ""
+    def get_audio_filter_string(self, in_label="0:a", out_label="a0"):
+        r = self.get_param("repeat") or 4
+        return f"[{in_label}]aloop={r - 1}:1000[{out_label}]"
+
+
+class PanEffect(BaseEffect):
+    """声道摇摆"""
+    name = "声道摇摆"
+    category = "音频魔改"
+    description = "声音左右快速来回摇摆"
+    status = "已完成"
+    @classmethod
+    def get_param_defs(cls):
+        return [EffectParam("speed", "摇摆速度", float, 2.0, 0.5, 10.0, 0.5, suffix="Hz")]
+    def get_filter_string(self, in_label="0:v", out_label="v0"): return ""
+    def get_audio_filter_string(self, in_label="0:a", out_label="a0"):
+        s = self.get_param("speed") or 2.0
+        return f"[{in_label}]stereotools=mlev=0.01*sin(2*PI*{s}*t):slev=0.01*cos(2*PI*{s}*t)[{out_label}]"

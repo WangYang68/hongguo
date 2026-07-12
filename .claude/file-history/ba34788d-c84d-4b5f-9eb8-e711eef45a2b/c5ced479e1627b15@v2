@@ -1,0 +1,131 @@
+"""
+组合特效：蒸汽波、CRT 故障、鬼畜三连
+——每个组合特效内部串联多个子特效
+【开发状态：已完成】
+"""
+
+from app.effects.base import BaseEffect, EffectParam
+
+
+class VaporwaveEffect(BaseEffect):
+    """蒸汽波：慢放 + 音高降低 + 混响 + 色相循环"""
+    name = "蒸汽波"
+    category = "组合特效"
+    description = "慢放 + 音高降低 + 混响 + 色相循环"
+    status = "已完成"
+
+    @classmethod
+    def get_param_defs(cls):
+        return [
+            EffectParam("intensity", "强度", float, 0.7, 0.3, 1.0, 0.05),
+        ]
+
+    def get_filter_string(self, in_label="0:v", out_label="v0"):
+        i = self.get_param("intensity") or 0.7
+        return (
+            f"[{in_label}]setpts={1.0/i}*PTS,"
+            f"hue=H=mod(120*t,360),"
+            f"eq=saturation=1.5:brightness=-0.05,"
+            f"gblur=sigma={ (1 - i) * 3 }[{out_label}]"
+        )
+
+    def get_audio_filter_string(self, in_label="0:a", out_label="a0"):
+        i = self.get_param("intensity") or 0.7
+        return (
+            f"[{in_label}]asetrate=44100*{i},aresample=44100,atempo=1.0,"
+            f"aecho=0.6:0.4:500:0.3[{out_label}]"
+        )
+
+
+class CRTGlitchEffect(BaseEffect):
+    """老电视故障风：抖动 + 雪花 + 扫描线 + RGB分离"""
+    name = "CRT故障"
+    category = "组合特效"
+    description = "抖动 + 雪花 + 扫描线 + 色差"
+    status = "已完成"
+
+    @classmethod
+    def get_param_defs(cls):
+        return [
+            EffectParam("intensity", "故障强度", int, 8, 1, 20, 1),
+        ]
+
+    def get_filter_string(self, in_label="0:v", out_label="v0"):
+        o = self.get_param("intensity") or 8
+        return (
+            f"[{in_label}]"
+            f"split=3[r][g][b];"
+            f"[r]lutrgb=g=0:b=0,crop=iw-{o}:ih:{o}:0,pad=iw:ih:0:0[red];"
+            f"[g]lutrgb=r=0:b=0,crop=iw-{o}:ih:{o//2}:0,pad=iw:ih:0:0[green];"
+            f"[b]lutrgb=r=0:g=0,crop=iw-{o}:ih:0:0,pad=iw:ih:{o}:0[blue];"
+            f"[red][green]blend=all_mode=addition[tmp];"
+            f"[tmp][blue]blend=all_mode=addition,"
+            f"noise=alls={o}:allf=t+u,"
+            f"drawgrid=w=iw:h=3:thickness=1:c=black@0.4[{out_label}]"
+        )
+
+
+class KichikuThreeEffect(BaseEffect):
+    """鬼畜三连：变速 + 倒放 + 循环"""
+    name = "鬼畜三连"
+    category = "组合特效"
+    description = "变速 + 倒放 + 循环的经典鬼畜组合"
+    status = "已完成"
+
+    @classmethod
+    def get_param_defs(cls):
+        return [
+            EffectParam("speed", "速度", float, 2.0, 0.5, 4.0, 0.5, suffix="x"),
+            EffectParam("loop_count", "循环次数", int, 3, 1, 10, 1),
+        ]
+
+    def get_filter_string(self, in_label="0:v", out_label="v0"):
+        s = self.get_param("speed") or 2.0
+        c = self.get_param("loop_count") or 3
+        pts = 1.0 / s if s > 0 else 1.0
+        return f"[{in_label}]setpts={pts}*PTS,reverse,loop={c}:1:0[{out_label}]"
+
+    def get_audio_filter_string(self, in_label="0:a", out_label="a0"):
+        s = self.get_param("speed") or 2.0
+        return f"[{in_label}]asetrate=44100*{s},aresample=44100,atempo=1.0,areverse[{out_label}]"
+
+
+class PsychedelicEffect(BaseEffect):
+    """迷幻梦境：模糊 + 色相循环 + 残影"""
+    name = "迷幻梦境"
+    category = "组合特效"
+    description = "模糊 + 色相循环 + 残影的迷幻效果"
+    status = "已完成"
+
+    @classmethod
+    def get_param_defs(cls):
+        return [
+            EffectParam("intensity", "迷幻强度", float, 0.6, 0.2, 1.0, 0.05),
+        ]
+
+    def get_filter_string(self, in_label="0:v", out_label="v0"):
+        i = self.get_param("intensity") or 0.6
+        return (
+            f"[{in_label}]"
+            f"tmix=frames=6:weights=1 0.8 0.6 0.4 0.2 0.1,"
+            f"hue=H=mod(180*t*{i},360),"
+            f"gblur=sigma={3 * i}[{out_label}]"
+        )
+
+
+class FastCutEffect(BaseEffect):
+    """暴力快切"""
+    name = "暴力快切"
+    category = "组合特效"
+    description = "高频率跳帧切换画面"
+    status = "已完成"
+
+    @classmethod
+    def get_param_defs(cls):
+        return [
+            EffectParam("interval", "切换间隔(帧)", int, 5, 1, 30, 1),
+        ]
+
+    def get_filter_string(self, in_label="0:v", out_label="v0"):
+        iv = self.get_param("interval") or 5
+        return f"[{in_label}]framestep={iv},fps=30[{out_label}]"

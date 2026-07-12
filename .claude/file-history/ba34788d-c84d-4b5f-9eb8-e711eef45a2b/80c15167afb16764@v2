@@ -1,0 +1,47 @@
+"""
+URL 路由 — 识别链接平台类型
+【开发状态：已完成】
+"""
+
+from enum import Enum, auto
+from urllib.parse import urlparse
+
+
+class UrlType(Enum):
+    DOUYIN = auto()
+    KUAISHOU = auto()
+    BILIBILI = auto()
+    YOUTUBE = auto()
+    GENERIC = auto()
+
+
+def classify_url(url: str) -> UrlType:
+    """识别 URL 平台类型"""
+    try:
+        parsed = urlparse(url)
+        host = (parsed.netloc or "").lower()
+    except Exception:
+        return UrlType.GENERIC
+
+    if any(d in host for d in ["douyin.com", "iesdouyin.com"]):
+        return UrlType.DOUYIN
+    if "kuaishou.com" in host:
+        return UrlType.KUAISHOU
+    if "bilibili.com" in host:
+        return UrlType.BILIBILI
+    if any(d in host for d in ["youtube.com", "youtu.be"]):
+        return UrlType.YOUTUBE
+
+    return UrlType.GENERIC
+
+
+def get_platform_label(url: str) -> str:
+    """返回平台显示名称"""
+    mapping = {
+        UrlType.DOUYIN: "抖音",
+        UrlType.KUAISHOU: "快手",
+        UrlType.BILIBILI: "B站",
+        UrlType.YOUTUBE: "YouTube",
+        UrlType.GENERIC: "其他平台",
+    }
+    return mapping.get(classify_url(url), "其他平台")

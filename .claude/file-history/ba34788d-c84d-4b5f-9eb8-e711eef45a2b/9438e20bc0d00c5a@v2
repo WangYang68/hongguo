@@ -1,0 +1,102 @@
+"""
+FrameExtractor — 逐帧提取用于视频预览
+通过 FFmpeg pipe 提取 RGB 数据 → QImage
+【开发状态：已完成】
+"""
+
+import subprocess
+import sys
+import numpy as np
+from PyQt6.QtGui import QImage, QPixmap
+from app.settings import FFMPEG_PATH
+
+
+class FrameExtractor:
+    """从视频文件提取特定帧为 QImage / QPixmap"""
+
+    def __init__(self, filepath: str):
+        self.filepath = filepath
+
+    def get_frame(self, time_sec: float, width: int = 0, height: int = 0) -> QImage | None:
+        """
+        提取指定时间点的帧。
+        width/height 为 0 时保持原始分辨率。
+        """
+        vf_parts = []
+        if width > 0 and height > 0:
+            vf_parts.append(f"scale={width}:{height}")
+
+        cmd = [
+            FFMPEG_PATH, "-y",
+            "-ss", str(time_sec),
+            "-i", str(self.filepath),
+            "-vframes", "1",
+            "-f", "rawvideo",
+            "-pix_fmt", "rgb24",
+        ]
+        if vf_parts:
+            cmd.extend(["-vf", ",".join(vf_parts)])
+        cmd.append("-")
+
+        try:
+            proc = subprocess.run(
+                cmd, capture_output=True, timeout=15,
+                creationflags=subprocess.CREATE_NO_WINDOW if sys.platform == "win32" else 0,
+            )
+            if proc.returncode != 0 or len(proc.stdout) == 0:
+                return None
+
+            # 确定实际宽高（从 ffprobe 或估计）
+            return self._bytes_to_qimage(proc.stdout, width, height)
+
+        except (subprocess.TimeoutExpired, FileNotFoundError):
+            return None
+
+    def get_thumbnail(self, max_width: int = 480, time_sec: float = 0.5) -> QPixmap | None:
+        """获取缩略图 QPixmap，自动使用视频原始宽高比"""
+        from app.ffmpeg.probe import FFprobeReader
+        probe = FFprobeReader(self.filepath)
+        info = probe.get_video_info()
+        w, h = info.get("width", 0), info.get("height", 0)
+
+        if w > 0 and h > 0:
+            ratio = max_width / w
+            target_w = max_width
+            target_h = int(h * ratio)
+        else:
+            target_w = max_width
+            target_h = int(max_width * 9 / 16)
+
+        img = self.get_frame(time_sec, target_w, target_h)
+        if img:
+            return QPixmap.fromImage(img)
+        return None
+
+    @staticmethod
+    def _bytes_to_qimage(data: bytes, w: int, h: int) -> QImage | None:
+        """将 raw rgb24 字节转换为 QImage"""
+        if w <= 0 or h <= 0:
+            # 尝试推断尺寸
+            import math
+            total = len(data) // 3  # RGB = 3 bytes/pixel
+            side = int(math.sqrt(total))
+            for dim in range(side, side + 200):
+                if total % dim == 0:
+                    h = dim
+                    w = total // dim
+                    if 0.3 < w / h < 3.0:
+                        break
+
+        if w <= 0 or h <= 0:
+            return None
+
+        expected = w * h * 3
+        if len(data) < expected:
+            return None
+
+        # 裁剪到期望尺寸
+        data = data[:expected]
+
+        img = QImage(data, w, h, w * 3, QImage.Format.Format_RGB888)
+        # 深拷贝避免数据被回收
+        return img.copy()

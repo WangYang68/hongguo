@@ -1,0 +1,255 @@
+"""
+DownloadTab — 视频下载标签页
+URL 输入 → 解析视频信息 → 选择画质 → 下载
+【开发状态：已完成】
+"""
+
+import os
+import requests
+from io import BytesIO
+from PyQt6.QtWidgets import (
+    QWidget, QVBoxLayout, QHBoxLayout, QLabel,
+    QPushButton, QScrollArea, QGroupBox, QGridLayout,
+    QMessageBox, QSizePolicy,
+)
+from PyQt6.QtCore import Qt, QThread, pyqtSignal, QTimer
+from PyQt6.QtGui import QPixmap
+
+from app.theme import COLORS
+from app.widgets.url_input import UrlInput
+from app.widgets.format_selector import FormatSelector
+from app.workers.download_worker import DownloadWorker
+from app.settings import DOWNLOADS_DIR
+from app.utils.file_utils import format_filesize, format_duration
+
+
+class DownloadTab(QWidget):
+    """视频下载功能标签页"""
+
+    download_requested = pyqtSignal(str)  # filepath to edit tab
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self._current_url = ""
+        self._parsed_info: dict = {}
+        self._worker: DownloadWorker | None = None
+        self._thread: QThread | None = None
+        self._init_ui()
+
+    def _init_ui(self):
+        root = QVBoxLayout(self)
+        root.setContentsMargins(24, 20, 24, 20)
+        root.setSpacing(16)
+
+        # --- 标题 ---
+        title = QLabel("📥 视频下载")
+        title.setProperty("class", "title")
+        title.setStyleSheet(f"font-size: 22px; font-weight: 700; color: {COLORS['text_primary']};")
+        root.addWidget(title)
+
+        # --- URL 输入 ---
+        self._url_input = UrlInput()
+        self._url_input.parse_requested.connect(self._start_parse)
+        root.addWidget(self._url_input)
+
+        # --- 信息展示区（滚动） ---
+        scroll = QScrollArea()
+        scroll.setWidgetResizable(True)
+        scroll.setStyleSheet(f"QScrollArea {{ border: none; background: transparent; }}")
+
+        self._info_widget = QWidget()
+        self._info_layout = QVBoxLayout(self._info_widget)
+        self._info_layout.setContentsMargins(0, 0, 0, 0)
+        self._info_layout.setSpacing(12)
+
+        # 状态标签
+        self._status_label = QLabel("")
+        self._status_label.setStyleSheet(f"color: {COLORS['text_secondary']}; font-size: 13px;")
+        self._info_layout.addWidget(self._status_label)
+
+        # 视频概要
+        self._summary_group = QGroupBox("视频信息")
+        self._summary_group.setVisible(False)
+        self._summary_layout = QGridLayout(self._summary_group)
+        self._summary_layout.setSpacing(8)
+
+        self._info_layout.addWidget(self._summary_group)
+
+        # 格式选择
+        self._format_selector = FormatSelector()
+        self._format_selector.format_selected.connect(self._on_format_selected)
+        self._format_selector.setVisible(False)
+        self._info_layout.addWidget(self._format_selector)
+
+        # 下载按钮
+        self._download_bar = QWidget()
+        self._download_bar.setVisible(False)
+        bar_layout = QHBoxLayout(self._download_bar)
+        bar_layout.setContentsMargins(0, 0, 0, 0)
+
+        self._download_btn = QPushButton("⬇ 下载视频")
+        self._download_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        self._download_btn.setMinimumHeight(44)
+        self._download_btn.clicked.connect(self._start_download)
+        bar_layout.addWidget(self._download_btn)
+
+        self._open_folder_btn = QPushButton("📂 打开目录")
+        self._open_folder_btn.setProperty("class", "secondary")
+        self._open_folder_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        self._open_folder_btn.clicked.connect(lambda: os.startfile(str(DOWNLOADS_DIR)))
+        bar_layout.addWidget(self._open_folder_btn)
+
+        self._info_layout.addWidget(self._download_bar)
+        self._info_layout.addStretch()
+
+        scroll.setWidget(self._info_widget)
+        root.addWidget(scroll, 1)
+
+    # ===== 解析流程 =====
+    def _start_parse(self, url: str):
+        self._current_url = url
+        self._status_label.setText("⏳ 正在解析视频...")
+        self._status_label.setStyleSheet(f"color: {COLORS['accent']}; font-size: 13px;")
+        self._summary_group.setVisible(False)
+        self._format_selector.setVisible(False)
+        self._download_bar.setVisible(False)
+
+        self._launch_worker(url, download=False)
+
+    def _start_download(self):
+        if not self._current_url:
+            return
+        self._download_btn.setEnabled(False)
+        self._download_btn.setText("⏳ 下载中...")
+        self._status_label.setText("⏳ 正在下载视频...")
+        self._launch_worker(self._current_url, download=True)
+
+    def _launch_worker(self, url: str, download: bool):
+        # 安全清理旧线程
+        if self._thread is not None:
+            import sip
+            if not sip.isdeleted(self._thread):
+                try:
+                    if self._thread.isRunning():
+                        self._worker.cancel()
+                        self._thread.quit()
+                        self._thread.wait(2000)
+                except RuntimeError:
+                    pass
+            self._thread = None
+            self._worker = None
+
+        fmt_id = ""
+        if download and hasattr(self, "_selected_format"):
+            fmt_id = self._format_selector.get_format_id(self._selected_format)
+
+        self._worker = DownloadWorker(url, format_id=fmt_id)
+        self._thread = QThread(self)  # 设置 parent 防止过早回收
+        self._worker.moveToThread(self._thread)
+
+        self._thread.started.connect(self._worker.run)
+        self._worker.info_parsed.connect(self._on_info_parsed)
+        self._worker.download_complete.connect(self._on_download_complete)
+        self._worker.progress.connect(self._on_progress)
+        self._worker.error.connect(self._on_error)
+        self._worker.finished.connect(self._thread.quit)
+        self._worker.finished.connect(self._worker.deleteLater)
+        self._thread.finished.connect(lambda: setattr(self, '_thread', None))
+        self._thread.finished.connect(self._thread.deleteLater)
+
+        self._thread.start()
+
+    # ===== 回调 =====
+    def _on_info_parsed(self, info: dict):
+        self._parsed_info = info
+        self._status_label.setText(f"✅ 解析完成 — {info.get('title', '未知')}")
+        self._status_label.setStyleSheet(f"color: {COLORS['success']}; font-size: 13px;")
+
+        # 填充概要
+        self._populate_summary(info)
+
+        # 格式列表
+        formats = info.get("formats", [])
+        if formats:
+            self._format_selector.set_formats(formats)
+            self._format_selector.setVisible(True)
+            self._download_bar.setVisible(True)
+            self._selected_format = formats[0]  # 默认选最高画质
+
+    def _on_download_complete(self, result: dict):
+        filepath = result.get("filepath", "")
+        filename = result.get("filename", "video.mp4")
+        self._status_label.setText(f"✅ 下载完成 — {filename}")
+        self._status_label.setStyleSheet(f"color: {COLORS['success']}; font-size: 13px;")
+        self._download_btn.setEnabled(True)
+        self._download_btn.setText("⬇ 下载视频")
+
+        # 通知编辑标签页
+        self.download_requested.emit(filepath)
+
+        QMessageBox.information(self, "下载完成", f"视频已保存到:\n{filepath}")
+
+    def _on_progress(self, pct: int):
+        self._status_label.setText(f"⏳ 处理中... {pct}%")
+
+    def _on_error(self, msg: str):
+        self._status_label.setText(f"❌ 错误: {msg}")
+        self._status_label.setStyleSheet(f"color: {COLORS['danger']}; font-size: 13px;")
+        self._download_btn.setEnabled(True)
+        self._download_btn.setText("⬇ 下载视频")
+
+    def _on_format_selected(self, fmt: dict):
+        self._selected_format = fmt
+
+    def _populate_summary(self, info: dict):
+        """填充视频概要区域（含封面图和信息表）"""
+        # 清除旧数据
+        while self._summary_layout.count():
+            item = self._summary_layout.takeAt(0)
+            if item.widget():
+                item.widget().deleteLater()
+
+        # --- 第一行：封面图 ---
+        thumbnail = info.get("thumbnail", "")
+        if thumbnail:
+            try:
+                resp = requests.get(thumbnail, timeout=10, headers={
+                    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"
+                })
+                if resp.status_code == 200:
+                    pix = QPixmap()
+                    pix.loadFromData(resp.content)
+                    if not pix.isNull():
+                        img_label = QLabel()
+                        img_label.setPixmap(pix.scaled(320, 180, Qt.AspectRatioMode.KeepAspectRatio, Qt.TransformationMode.SmoothTransformation))
+                        img_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+                        img_label.setStyleSheet(f"background-color: #000; border-radius: 8px; padding: 4px;")
+                        img_label.setMinimumHeight(180)
+                        self._summary_layout.addWidget(img_label)
+            except Exception:
+                pass  # 封面加载失败静默跳过
+
+        # --- 信息表格 ---
+        fields = [
+            ("标题", info.get("title", "未知")[:80]),
+            ("作者", info.get("uploader", "未知")),
+            ("平台", info.get("platform", "未知")),
+            ("时长", info.get("duration_string", "00:00")),
+            ("播放量", str(info.get("view_count", "")) if info.get("view_count") else "-"),
+        ]
+
+        # 描述（如果有）
+        desc = info.get("description", "")
+        if desc and desc != info.get("title", ""):
+            fields.append(("简介", desc[:200]))
+
+        for i, (label, value) in enumerate(fields):
+            lbl = QLabel(label)
+            lbl.setStyleSheet(f"color: {COLORS['text_muted']}; font-size: 12px;")
+            val = QLabel(str(value))
+            val.setStyleSheet(f"color: {COLORS['text_primary']}; font-size: 13px; font-weight: 500;")
+            val.setWordWrap(True)
+            self._summary_layout.addWidget(lbl, i + 1, 0, Qt.AlignmentFlag.AlignTop)
+            self._summary_layout.addWidget(val, i + 1, 1)
+
+        self._summary_group.setVisible(True)

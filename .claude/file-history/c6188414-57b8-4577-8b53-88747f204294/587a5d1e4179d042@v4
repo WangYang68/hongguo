@@ -1,0 +1,677 @@
+package com.example.magicpinao.ui.viewmodel
+
+import android.app.Application
+import android.util.Log
+import androidx.lifecycle.AndroidViewModel
+import androidx.lifecycle.viewModelScope
+import com.example.magicpinao.core.accessibility.SupportedApps
+import com.example.magicpinao.core.auth.AuthManager
+import com.example.magicpinao.core.coordinate.CoordinateManager
+import com.example.magicpinao.core.data.CoordinateRepository
+import com.example.magicpinao.core.data.MusicEntity
+import com.example.magicpinao.core.data.MusicRepository
+import com.example.magicpinao.core.midi.MidiParser
+import com.example.magicpinao.core.midi.MidiTestUtils
+import com.example.magicpinao.core.midi.NoteSequence
+import com.example.magicpinao.core.network.*
+import com.example.magicpinao.core.performance.PerformanceScheduler
+import com.example.magicpinao.core.utils.PermissionManager
+import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.launch
+import java.text.SimpleDateFormat
+import java.util.*
+
+/**
+ * 主界面 ViewModel
+ */
+class MainViewModel(application: Application) : AndroidViewModel(application) {
+
+    private val musicRepository = MusicRepository(application)
+    private val coordinateRepository = CoordinateRepository(application)
+    private val permissionManager = PermissionManager(application)
+    private val midiParser = MidiParser()
+    private val coordinateManager = CoordinateManager()
+    private val performanceScheduler = PerformanceScheduler.getOrCreate()
+
+    private val apiRepository = ApiRepository()
+    private val dateFormat = SimpleDateFormat("yyyy-MM-dd HH:mm:ss", Locale.getDefault())
+
+    // ===== UI 状态 =====
+    private val _uiState = MutableStateFlow(MainUiState())
+    val uiState: StateFlow<MainUiState> = _uiState.asStateFlow()
+
+    // ===== 本地音乐 =====
+    private val _musicList = MutableStateFlow<List<MusicEntity>>(emptyList())
+    val musicList: StateFlow<List<MusicEntity>> = _musicList.asStateFlow()
+
+    private val _searchQuery = MutableStateFlow("")
+    val searchQuery: StateFlow<String> = _searchQuery.asStateFlow()
+
+    private val _selectedTag = MutableStateFlow("全部")
+    val selectedTag: StateFlow<String> = _selectedTag.asStateFlow()
+
+    // ===== 云音乐 =====
+    private val _cloudMusicList = MutableStateFlow<List<MusicItem>>(emptyList())
+    val cloudMusicList: StateFlow<List<MusicItem>> = _cloudMusicList.asStateFlow()
+
+    private val _cloudSearchQuery = MutableStateFlow("")
+    val cloudSearchQuery: StateFlow<String> = _cloudSearchQuery.asStateFlow()
+
+    private val _isCloudLoading = MutableStateFlow(false)
+    val isCloudLoading: StateFlow<Boolean> = _isCloudLoading.asStateFlow()
+
+    private var cloudCurrentPage = 1
+    private var cloudHasMore = true
+
+    // ===== VIP激活记录 =====
+    private val _vipRecords = MutableStateFlow<List<VipRecord>>(emptyList())
+    val vipRecords: StateFlow<List<VipRecord>> = _vipRecords.asStateFlow()
+
+    // ===== 分页（本地） =====
+    private var currentPage = 1
+    private var hasMore = true
+    private val pageSize = 20
+
+    init {
+        // 注入 CoordinateManager
+        performanceScheduler.setCoordinateManager(coordinateManager)
+
+        // 初始化 AuthManager
+        AuthManager.init(application)
+
+        // 扫描本地 MIDI
+        scanLocalMidiFiles()
+        loadMusicList()
+    }
+
+    // ========== 本地音乐 ==========
+
+    fun scanLocalMidiFiles() {
+        viewModelScope.launch {
+            try {
+                val context = getApplication<Application>()
+                copyMidiFilesFromAssets(context)
+                val midiDir = "${context.filesDir.absolutePath}/midi_music"
+                Log.d("MainViewModel", "Scanning MIDI files from: $midiDir")
+                val scannedMusic = musicRepository.scanLocalMidiFiles(midiDir)
+                Log.d("MainViewModel", "Found ${scannedMusic.size} MIDI files")
+                syncMusicDatabase(midiDir)
+            } catch (e: Exception) {
+                Log.e("MainViewModel", "Error scanning MIDI files", e)
+            }
+        }
+    }
+
+    private suspend fun syncMusicDatabase(midiDir: String) {
+        try {
+            musicRepository.getAllMusic().collect { musicList ->
+                val dir = java.io.File(midiDir)
+                val existingFiles = dir.listFiles()?.map { it.absolutePath } ?: emptyList()
+                val toDelete = musicList.filter { music ->
+                    !existingFiles.contains(music.filePath)
+                }
+                if (toDelete.isNotEmpty()) {
+                    Log.d("MainViewModel", "Removing ${toDelete.size} outdated music records")
+                    toDelete.forEach { music -> musicRepository.deleteMusic(music) }
+                }
+                return@collect
+            }
+        } catch (e: Exception) {
+            Log.e("MainViewModel", "Error syncing music database", e)
+        }
+    }
+
+    private suspend fun copyMidiFilesFromAssets(context: Application) {
+        try {
+            val assetManager = context.assets
+            val midiDir = java.io.File("${context.filesDir.absolutePath}/midi_music")
+            if (!midiDir.exists()) midiDir.mkdirs()
+            val assetFiles = assetManager.list("midi_music") ?: emptyArray()
+            var copiedCount = 0
+            for (fileName in assetFiles) {
+                if (fileName.endsWith(".mid") || fileName.endsWith(".midi")) {
+                    val targetFile = java.io.File(midiDir, fileName)
+                    if (targetFile.exists()) continue
+                    assetManager.open("midi_music/$fileName").use { inputStream ->
+                        targetFile.outputStream().use { outputStream ->
+                            inputStream.copyTo(outputStream)
+                        }
+                    }
+                    copiedCount++
+                }
+            }
+            if (copiedCount > 0) Log.d("MainViewModel", "Copied $copiedCount MIDI files")
+        } catch (e: Exception) {
+            Log.e("MainViewModel", "Error copying MIDI files from assets", e)
+        }
+    }
+
+    private fun loadMusicList() {
+        viewModelScope.launch {
+            musicRepository.getAllMusic().collect { music ->
+                _musicList.value = music
+            }
+        }
+    }
+
+    fun searchMusic(query: String) {
+        _searchQuery.value = query
+        currentPage = 1
+        viewModelScope.launch {
+            if (query.isBlank() && _selectedTag.value == "全部") {
+                loadMusicList()
+            } else if (query.isBlank()) {
+                musicRepository.searchByTag(_selectedTag.value).collect { _musicList.value = it }
+            } else {
+                musicRepository.searchByTitleOrTag(query).collect { _musicList.value = it }
+            }
+        }
+    }
+
+    fun selectTag(tag: String) {
+        _selectedTag.value = tag
+        currentPage = 1
+        viewModelScope.launch {
+            if (tag == "全部") {
+                if (_searchQuery.value.isBlank()) loadMusicList()
+                else musicRepository.searchByTitle(_searchQuery.value).collect { _musicList.value = it }
+            } else {
+                musicRepository.searchByTag(tag).collect { _musicList.value = it }
+            }
+        }
+    }
+
+    fun loadMore() {
+        if (!hasMore) return
+        currentPage++
+        viewModelScope.launch {
+            val more = musicRepository.getMusicPaged(currentPage, pageSize)
+            if (more.size < pageSize) hasMore = false
+            _musicList.value = _musicList.value + more
+        }
+    }
+
+    fun refresh() {
+        currentPage = 1
+        hasMore = true
+        scanLocalMidiFiles()
+    }
+
+    // ========== 云音乐 ==========
+
+    fun loadCloudMusic(refresh: Boolean = false) {
+        if (refresh) {
+            cloudCurrentPage = 1
+            cloudHasMore = true
+        }
+        viewModelScope.launch {
+            _isCloudLoading.value = true
+            val token = AuthManager.token ?: ""
+            val result = apiRepository.getMusicList(
+                token = token,
+                page = cloudCurrentPage,
+                size = 10,
+                search = _cloudSearchQuery.value.ifBlank { null }
+            )
+            result.fold(
+                onSuccess = { data ->
+                    if (refresh || cloudCurrentPage == 1) {
+                        _cloudMusicList.value = data.data
+                        CloudMusicCache.set(data.data)
+                    } else {
+                        _cloudMusicList.value = _cloudMusicList.value + data.data
+                        CloudMusicCache.addMore(data.data)
+                    }
+                    cloudHasMore = data.data.size >= 10
+                },
+                onFailure = { e ->
+                    Log.e("MainViewModel", "Load cloud music error", e)
+                }
+            )
+            _isCloudLoading.value = false
+        }
+    }
+
+    fun loadMoreCloudMusic() {
+        if (!cloudHasMore || _isCloudLoading.value) return
+        cloudCurrentPage++
+        loadCloudMusic()
+    }
+
+    fun searchCloudMusic(query: String) {
+        _cloudSearchQuery.value = query
+        cloudCurrentPage = 1
+        cloudHasMore = true
+        loadCloudMusic(refresh = true)
+    }
+
+    // ========== VIP检查与播放 ==========
+
+    /**
+     * 检查VIP状态并播放云音乐
+     */
+    fun checkVipAndPlay(music: MusicItem, callback: (Boolean, String) -> Unit) {
+        viewModelScope.launch {
+            val token = AuthManager.token ?: ""
+            if (token.isBlank()) {
+                callback(false, "请先登录")
+                return@launch
+            }
+
+            val vipResult = apiRepository.checkVipExpire(token)
+            vipResult.fold(
+                onSuccess = { vipValid ->
+                    if (vipValid) {
+                        // VIP有效，添加播放记录
+                        apiRepository.addRecentPlay(token, music.id)
+                        callback(true, "")
+                    } else {
+                        // VIP无效，检查10分钟试用期
+                        val createdAt = AuthManager.createdAt
+                        if (createdAt.isNotBlank()) {
+                            try {
+                                val dt = dateFormat.parse(createdAt)
+                                if (dt != null) {
+                                    val trialEnd = Date(dt.time + 10 * 60 * 1000) // +10分钟
+                                    if (Date().before(trialEnd)) {
+                                        // 在试用期内
+                                        apiRepository.addRecentPlay(token, music.id)
+                                        callback(true, "")
+                                        return@fold
+                                    }
+                                }
+                            } catch (e: Exception) {
+                                Log.e("MainViewModel", "Parse date error", e)
+                            }
+                        }
+                        callback(false, "VIP已过期")
+                    }
+                },
+                onFailure = { e ->
+                    callback(false, e.message ?: "检查VIP状态失败")
+                }
+            )
+        }
+    }
+
+    fun playCloudMusic(music: MusicItem) {
+        viewModelScope.launch {
+            try {
+                val token = AuthManager.token ?: ""
+                val packageName = _uiState.value.selectedAppPackage
+
+                if (packageName.isNullOrBlank()) {
+                    _uiState.value = _uiState.value.copy(showAppSelector = true)
+                    return@launch
+                }
+
+                // 构建音乐URL
+                val musicUrl = "http://39.107.213.164:8090${music.path}"
+                Log.d("MainViewModel", "Playing cloud music: ${music.name} from $musicUrl")
+
+                // 下载MIDI文件到本地
+                val app = getApplication<Application>()
+                val midiDir = java.io.File("${app.filesDir.absolutePath}/midi_music")
+                if (!midiDir.exists()) midiDir.mkdirs()
+
+                val localFile = java.io.File(midiDir, "cloud_${music.id}_${music.name}")
+                if (!localFile.exists()) {
+                    try {
+                        okhttp3.OkHttpClient().newCall(
+                            okhttp3.Request.Builder().url(musicUrl).build()
+                        ).execute().use { response ->
+                            response.body?.byteStream()?.use { input ->
+                                localFile.outputStream().use { output ->
+                                    input.copyTo(output)
+                                }
+                            }
+                        }
+                    } catch (e: Exception) {
+                        Log.e("MainViewModel", "Download MIDI error", e)
+                    }
+                }
+
+                // 添加最近播放记录
+                apiRepository.addRecentPlay(token, music.id)
+
+                // 解析并播放
+                val sequence = midiParser.parseMidiFile(localFile.absolutePath)
+                MidiTestUtils.printNoteStatistics(sequence)
+                Log.d("MainViewModel", "Cloud MIDI: ${sequence.noteCount} notes, ${sequence.duration}ms")
+
+                val coordEntity = coordinateRepository.getCoordinateByPackage(packageName)
+                if (coordEntity == null) {
+                    _uiState.value = _uiState.value.copy(errorMessage = "请先标定琴键坐标", isPlaying = false)
+                    return@launch
+                }
+                val appInfo = SupportedApps.findByPackage(packageName) ?: SupportedApps.getDefault()
+                val coordList = com.google.gson.Gson().fromJson(
+                    coordEntity.keyCoordinates,
+                    Array<com.example.magicpinao.core.data.PianoKeyCoordinate>::class.java
+                ).toList()
+                coordinateManager.setCoordinates(coordList)
+
+                val service = com.example.magicpinao.core.accessibility.PianoAccessibilityService.instance
+                if (service == null) {
+                    _uiState.value = _uiState.value.copy(errorMessage = "无障碍服务未启动", isPlaying = false)
+                    return@launch
+                }
+                service.setCoordinates(coordList)
+
+                _uiState.value = _uiState.value.copy(
+                    isPlaying = true,
+                    currentMusicId = music.id.toString(),
+                    currentMusicTitle = music.name,
+                    errorMessage = null
+                )
+
+                com.example.magicpinao.core.accessibility.FloatingPlayerService.stop(app)
+                kotlinx.coroutines.delay(200)
+                com.example.magicpinao.core.accessibility.FloatingPlayerService.start(
+                    app, packageName, music.name, music.id.toString()
+                )
+
+                val root = service.rootInActiveWindow
+                val fgPkg = root?.packageName?.toString()
+                root?.recycle()
+                if (fgPkg != packageName) {
+                    service.openTargetApp(packageName)
+                    kotlinx.coroutines.delay(1500)
+                } else {
+                    kotlinx.coroutines.delay(300)
+                }
+
+                performanceScheduler.setCoordinateManager(coordinateManager)
+                val lt1 = try { com.example.magicpinao.core.calibration.PianoLayoutType.valueOf(appInfo.layoutType) } catch (e: Exception) { com.example.magicpinao.core.calibration.PianoLayoutType.LAYOUT_21 }
+                performanceScheduler.schedule(sequence, packageName, appInfo.baseNote, appInfo.keyCount, appInfo.whiteKeysOnly, lt1)
+                performanceScheduler.start()
+
+                Log.d("MainViewModel", "=== CLOUD PLAYBACK: ${sequence.noteCount} notes ===")
+            } catch (e: Exception) {
+                Log.e("MainViewModel", "Cloud play error", e)
+                _uiState.value = _uiState.value.copy(errorMessage = "播放失败: ${e.message}", isPlaying = false)
+            }
+        }
+    }
+
+    // ========== 认证相关 ==========
+
+    fun login(account: String, password: String, callback: (Boolean, String) -> Unit) {
+        viewModelScope.launch {
+            val result = apiRepository.login(account, password)
+            result.fold(
+                onSuccess = { user ->
+                    AuthManager.saveLogin(user)
+                    callback(true, "登录成功")
+                },
+                onFailure = { e ->
+                    callback(false, e.message ?: "登录失败")
+                }
+            )
+        }
+    }
+
+    fun register(
+        account: String,
+        nickname: String,
+        password: String,
+        inviteCode: String?,
+        callback: (Boolean, String) -> Unit
+    ) {
+        viewModelScope.launch {
+            val result = apiRepository.register(account, nickname, password, inviteCode)
+            result.fold(
+                onSuccess = { msg -> callback(true, msg) },
+                onFailure = { e -> callback(false, e.message ?: "注册失败") }
+            )
+        }
+    }
+
+    fun logout(callback: (Boolean, String) -> Unit) {
+        viewModelScope.launch {
+            val token = AuthManager.token ?: ""
+            val result = apiRepository.logout(token)
+            // 无论服务端是否成功，都清除本地登录状态
+            AuthManager.clearLogin()
+            stopPlayback()
+            result.fold(
+                onSuccess = { msg -> callback(true, msg) },
+                onFailure = { callback(false, "") }
+            )
+        }
+    }
+
+    fun uploadAvatar(file: java.io.File, callback: (Boolean, String) -> Unit) {
+        viewModelScope.launch {
+            val token = AuthManager.token ?: ""
+            val result = apiRepository.uploadAvatar(token, file)
+            result.fold(
+                onSuccess = { url -> callback(true, url) },
+                onFailure = { e -> callback(false, e.message ?: "上传失败") }
+            )
+        }
+    }
+
+    fun activateVipCode(code: String, callback: (Boolean, String) -> Unit) {
+        viewModelScope.launch {
+            val token = AuthManager.token ?: ""
+            val result = apiRepository.activateVip(token, code)
+            result.fold(
+                onSuccess = { msg ->
+                    AuthManager.updateVipStatus("2")
+                    loadVipRecords()
+                    callback(true, msg)
+                },
+                onFailure = { e -> callback(false, e.message ?: "激活失败") }
+            )
+        }
+    }
+
+    fun resetPassword(account: String, newPassword: String, callback: (Boolean, String) -> Unit) {
+        viewModelScope.launch {
+            val result = apiRepository.resetPassword(account, newPassword)
+            result.fold(
+                onSuccess = { msg -> callback(true, msg) },
+                onFailure = { e -> callback(false, e.message ?: "重置失败") }
+            )
+        }
+    }
+
+    // ========== VIP记录 ==========
+
+    fun loadVipRecords() {
+        viewModelScope.launch {
+            val token = AuthManager.token ?: ""
+            val result = apiRepository.getVipRecords(token, 1, 20)
+            result.fold(
+                onSuccess = { data -> _vipRecords.value = data.data },
+                onFailure = { Log.e("MainViewModel", "Load VIP records error", it) }
+            )
+        }
+    }
+
+    // ========== 播放控制（复用原有逻辑） ==========
+
+    fun selectTargetApp(packageName: String) {
+        _uiState.value = _uiState.value.copy(
+            selectedAppPackage = packageName,
+            showAppSelector = false
+        )
+    }
+
+    fun toggleAppSelector() {
+        _uiState.value = _uiState.value.copy(
+            showAppSelector = !_uiState.value.showAppSelector
+        )
+    }
+
+    fun checkAccessibilityPermission(): Boolean = permissionManager.isAccessibilityServiceEnabled()
+    fun openAccessibilitySettings() = permissionManager.openAccessibilitySettings()
+    fun openOverlaySettings() = permissionManager.openOverlaySettings()
+    fun checkOverlayPermission(): Boolean = permissionManager.hasOverlayPermission()
+
+    fun playMusic(musicId: String) {
+        val packageName = _uiState.value.selectedAppPackage
+        if (packageName.isNullOrBlank()) {
+            _uiState.value = _uiState.value.copy(showAppSelector = true, pendingMusicId = musicId)
+            return
+        }
+        playMusic(musicId, packageName)
+    }
+
+    fun checkAppAndCoordinates(callback: (AppCheckResult) -> Unit) {
+        val packageName = _uiState.value.selectedAppPackage
+        if (packageName.isNullOrBlank()) {
+            callback(AppCheckResult.NO_APP_SELECTED)
+            return
+        }
+        viewModelScope.launch {
+            val hasCoordinates = coordinateRepository.hasCoordinateForPackage(packageName)
+            if (!hasCoordinates) {
+                callback(AppCheckResult.NO_COORDINATES(packageName))
+            } else {
+                callback(AppCheckResult.OK)
+            }
+        }
+    }
+
+    fun startCalibration(packageName: String) {
+        val app = SupportedApps.findByPackage(packageName) ?: SupportedApps.getDefault()
+        if (!permissionManager.hasOverlayPermission()) {
+            _uiState.value = _uiState.value.copy(showPermissionDialog = true, permissionType = PermissionType.OVERLAY)
+            return
+        }
+        _uiState.value = _uiState.value.copy(isCalibrating = true, calibratingAppPackage = packageName)
+    }
+
+    fun finishCalibration() {
+        _uiState.value = _uiState.value.copy(isCalibrating = false, calibratingAppPackage = null)
+        loadMusicList()
+    }
+
+    private fun playMusic(musicId: String, packageName: String) {
+        viewModelScope.launch {
+            try {
+                val music = musicRepository.getMusicById(musicId) ?: run {
+                    _uiState.value = _uiState.value.copy(errorMessage = "音乐未找到")
+                    return@launch
+                }
+                val sequence = midiParser.parseMidiFile(music.filePath)
+                MidiTestUtils.printNoteStatistics(sequence)
+
+                val coordEntity = coordinateRepository.getCoordinateByPackage(packageName)
+                if (coordEntity == null) {
+                    _uiState.value = _uiState.value.copy(errorMessage = "请先标定琴键坐标", isPlaying = false)
+                    return@launch
+                }
+                val app = SupportedApps.findByPackage(packageName) ?: SupportedApps.getDefault()
+                val coordList = com.google.gson.Gson().fromJson(
+                    coordEntity.keyCoordinates,
+                    Array<com.example.magicpinao.core.data.PianoKeyCoordinate>::class.java
+                ).toList()
+                coordinateManager.setCoordinates(coordList)
+
+                val service = com.example.magicpinao.core.accessibility.PianoAccessibilityService.instance
+                if (service == null) {
+                    _uiState.value = _uiState.value.copy(errorMessage = "无障碍服务未启动", isPlaying = false)
+                    return@launch
+                }
+                service.setCoordinates(coordList)
+
+                _uiState.value = _uiState.value.copy(
+                    isPlaying = true,
+                    currentMusicId = musicId,
+                    currentMusicTitle = music.title,
+                    errorMessage = null
+                )
+
+                com.example.magicpinao.core.accessibility.FloatingPlayerService.stop(getApplication())
+                kotlinx.coroutines.delay(200)
+                com.example.magicpinao.core.accessibility.FloatingPlayerService.start(
+                    getApplication(), packageName, music.title, musicId
+                )
+
+                val root = service.rootInActiveWindow
+                val fgPkg = root?.packageName?.toString()
+                root?.recycle()
+                if (fgPkg != packageName) {
+                    service.openTargetApp(packageName)
+                    kotlinx.coroutines.delay(1500)
+                } else {
+                    kotlinx.coroutines.delay(300)
+                }
+
+                performanceScheduler.setCoordinateManager(coordinateManager)
+                performanceScheduler.schedule(sequence, packageName, app.baseNote, app.keyCount, app.whiteKeysOnly)
+                performanceScheduler.start()
+
+                Log.d("MainViewModel", "=== PLAYBACK: ${sequence.noteCount} notes ===")
+            } catch (e: Exception) {
+                Log.e("MainViewModel", "Play error", e)
+                _uiState.value = _uiState.value.copy(errorMessage = "播放失败: ${e.message}", isPlaying = false)
+            }
+        }
+    }
+
+    fun pausePlayback() {
+        performanceScheduler.pause()
+        _uiState.value = _uiState.value.copy(isPlaying = false)
+    }
+
+    fun resumePlayback() {
+        performanceScheduler.resume()
+        _uiState.value = _uiState.value.copy(isPlaying = true)
+    }
+
+    fun stopPlayback() {
+        performanceScheduler.stop()
+        com.example.magicpinao.core.accessibility.FloatingPlayerService.stop(getApplication())
+        _uiState.value = _uiState.value.copy(isPlaying = false, currentMusicId = null)
+    }
+
+    fun testTap(x: Int, y: Int, onResult: (Boolean, String) -> Unit) {
+        val service = com.example.magicpinao.core.accessibility.PianoAccessibilityService.instance
+        if (service == null) {
+            onResult(false, "无障碍服务未连接")
+            return
+        }
+        viewModelScope.launch {
+            val (ok, msg) = service.testTap(x, y)
+            onResult(ok, msg)
+        }
+    }
+
+    fun clearError() {
+        _uiState.value = _uiState.value.copy(errorMessage = null)
+    }
+}
+
+/**
+ * UI 状态
+ */
+data class MainUiState(
+    val isLoading: Boolean = false,
+    val isPlaying: Boolean = false,
+    val currentMusicId: String? = null,
+    val currentMusicTitle: String? = null,
+    val errorMessage: String? = null,
+    val showPermissionDialog: Boolean = false,
+    val permissionType: PermissionType = PermissionType.NONE,
+    val selectedAppPackage: String? = null,
+    val showAppSelector: Boolean = false,
+    val pendingMusicId: String? = null,
+    val isCalibrating: Boolean = false,
+    val calibratingAppPackage: String? = null
+)
+
+sealed class AppCheckResult {
+    object OK : AppCheckResult()
+    object NO_APP_SELECTED : AppCheckResult()
+    data class NO_COORDINATES(val packageName: String) : AppCheckResult()
+}
+
+enum class PermissionType {
+    NONE, ACCESSIBILITY, OVERLAY
+}

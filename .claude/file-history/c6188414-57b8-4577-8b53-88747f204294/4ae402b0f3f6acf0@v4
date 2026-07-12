@@ -1,0 +1,295 @@
+package com.example.magicpinao.ui.screens.calibration
+
+import android.widget.Toast
+import androidx.compose.foundation.*
+import androidx.compose.foundation.gestures.detectDragGestures
+import androidx.compose.foundation.layout.*
+import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.automirrored.filled.ArrowBack
+import androidx.compose.material3.*
+import androidx.compose.runtime.*
+import androidx.compose.ui.Alignment
+import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clip
+import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.geometry.Size
+import androidx.compose.ui.graphics.Brush
+import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.drawscope.DrawScope
+import androidx.compose.ui.graphics.drawscope.Stroke
+import androidx.compose.ui.graphics.nativeCanvas
+import androidx.compose.ui.input.pointer.pointerInput
+import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.LocalDensity
+import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.unit.dp
+import androidx.compose.ui.unit.sp
+import com.example.magicpinao.core.accessibility.SupportedApps
+import com.example.magicpinao.core.accessibility.TargetApp
+import com.example.magicpinao.core.calibration.PianoLayout
+import com.example.magicpinao.core.calibration.PianoLayoutType
+import com.example.magicpinao.core.calibration.PianoLayouts
+import com.example.magicpinao.core.data.AppDatabase
+import com.example.magicpinao.core.data.CoordinateEntity
+import com.example.magicpinao.core.data.CoordinateRepository
+import com.example.magicpinao.core.data.PianoKeyCoordinate
+import com.example.magicpinao.ui.theme.*
+import com.google.gson.Gson
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
+
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable
+fun CalibrationScreen(onBackClick: () -> Unit) {
+    val context = LocalContext.current; val scope = rememberCoroutineScope()
+    var step by remember { mutableIntStateOf(0) } // 0=选择应用, 1=标定
+    var selectedApp by remember { mutableStateOf<TargetApp?>(null) }
+    var selectedLayout by remember { mutableStateOf(PianoLayoutType.LAYOUT_21) }
+    var layout by remember { mutableStateOf(PianoLayouts.LAYOUT_21) }
+    var markers by remember { mutableStateOf(initMarkers(PianoLayouts.LAYOUT_21)) }
+    var selectedMarker by remember { mutableIntStateOf(-1) }
+    var schemeName by remember { mutableStateOf("") }
+    var schemesCount by remember { mutableStateOf<Map<String, Int>>(emptyMap()) }
+
+    LaunchedEffect(Unit) {
+        withContext(Dispatchers.IO) {
+            val repo = CoordinateRepository(context)
+            val map = mutableMapOf<String, Int>()
+            SupportedApps.apps.forEach { app ->
+                val cnt = repo.getSchemesForPackage(app.packageName).size
+                if (cnt > 0) map[app.packageName] = cnt
+            }
+            schemesCount = map
+        }
+    }
+
+    Scaffold(
+        topBar = {
+            TopAppBar(
+                title = { Text(if (step == 0) "标定琴键坐标" else "调整按键位置", color = TextPrimary, fontWeight = FontWeight.Bold) },
+                navigationIcon = { IconButton(onClick = { if (step == 1) step = 0 else onBackClick() }) { Icon(Icons.AutoMirrored.Filled.ArrowBack, "返回", tint = TextPrimary) } },
+                colors = TopAppBarDefaults.topAppBarColors(containerColor = SurfaceDark)
+            )
+        },
+        containerColor = BackgroundDark
+    ) { padding ->
+        if (step == 0) {
+            // === 步骤0：选择应用和布局 ===
+            Column(Modifier.padding(padding).padding(16.dp).verticalScroll(rememberScrollState())) {
+                Text("选择钢琴布局", style = MaterialTheme.typography.titleMedium, color = TextPrimary, fontWeight = FontWeight.Bold)
+                Spacer(Modifier.height(8.dp))
+                Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    PianoLayoutType.entries.forEach { lt ->
+                        val sel = lt == selectedLayout
+                        Card(
+                            Modifier.weight(1f).clickable { selectedLayout = lt; layout = PianoLayouts.getLayout(lt); markers = initMarkers(layout) },
+                            shape = RoundedCornerShape(12.dp),
+                            colors = CardDefaults.cardColors(containerColor = if (sel) PrimaryPurple else SurfaceDark),
+                            border = if (sel) BorderStroke(2.dp, PrimaryPurpleLight) else null
+                        ) {
+                            Column(Modifier.padding(10.dp), horizontalAlignment = Alignment.CenterHorizontally) {
+                                Text(when (lt) { PianoLayoutType.LAYOUT_21 -> "21键"; PianoLayoutType.LAYOUT_36 -> "36键"; PianoLayoutType.LAYOUT_15 -> "15键" },
+                                    color = if (sel) Color.White else TextPrimary, fontWeight = FontWeight.Bold)
+                                Text(lt.label, fontSize = 11.sp, color = if (sel) Color.White.copy(alpha = 0.7f) else TextHint)
+                            }
+                        }
+                    }
+                }
+                Spacer(Modifier.height(16.dp))
+                Text("选择目标应用", style = MaterialTheme.typography.titleMedium, color = TextPrimary, fontWeight = FontWeight.Bold)
+                Spacer(Modifier.height(8.dp))
+                SupportedApps.apps.forEach { app ->
+                    val cnt = schemesCount[app.packageName] ?: 0
+                    Card(Modifier.fillMaxWidth().padding(vertical = 4.dp).clickable { selectedApp = app; step = 1 },
+                        shape = RoundedCornerShape(12.dp), colors = CardDefaults.cardColors(containerColor = SurfaceDark)) {
+                        Row(Modifier.padding(14.dp), verticalAlignment = Alignment.CenterVertically) {
+                            Box(Modifier.size(44.dp).clip(RoundedCornerShape(10.dp)).background(Brush.linearGradient(listOf(PrimaryPurple, SecondaryCyan))), contentAlignment = Alignment.Center) { Text("🎹", fontSize = 20.sp) }
+                            Spacer(Modifier.width(12.dp))
+                            Column(Modifier.weight(1f)) {
+                                Text(app.appName, color = TextPrimary, fontWeight = FontWeight.Bold)
+                                Text("${app.keyCount}键 · ${app.description}", color = TextHint, fontSize = 13.sp)
+                            }
+                            if (cnt > 0) Text("$cnt 方案", color = SuccessGreen, fontSize = 11.sp)
+                        }
+                    }
+                }
+            }
+        } else {
+            // === 步骤1：标定界面 ===
+            val app = selectedApp ?: return@Scaffold
+            Column(Modifier.padding(padding).fillMaxSize()) {
+                // 钢琴键盘参考图 + 可拖动标记
+                Box(Modifier.weight(1f).fillMaxWidth().background(Color(0xFF1A1A2E))) {
+                    PianoReferenceView(layout, markers, selectedMarker,
+                        onMarkerSelect = { selectedMarker = it },
+                        onMarkerDrag = { idx, x, y ->
+                            markers = markers.toMutableList().apply { set(idx, get(idx).copy(x = x, y = y)) }
+                        }
+                    )
+                }
+                // 底部控制
+                Surface(Modifier.fillMaxWidth(), color = SurfaceDark, shadowElevation = 8.dp) {
+                    Column(Modifier.padding(12.dp)) {
+                        Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp), verticalAlignment = Alignment.CenterVertically) {
+                            OutlinedTextField(schemeName, { schemeName = it }, Modifier.weight(1f),
+                                label = { Text("方案名称") }, placeholder = { Text("如: 原神21键-v1") },
+                                singleLine = true, textStyle = MaterialTheme.typography.bodyMedium.copy(color = TextPrimary),
+                                colors = OutlinedTextFieldDefaults.colors(
+                                    focusedBorderColor = PrimaryPurpleLight, unfocusedBorderColor = SurfaceLight,
+                                    focusedLabelColor = PrimaryPurpleLight, unfocusedLabelColor = TextHint,
+                                    cursorColor = PrimaryPurple
+                                )
+                            )
+                            Button({
+                                markers = initMarkers(layout); selectedMarker = -1
+                            }, colors = ButtonDefaults.buttonColors(containerColor = SurfaceLight)) { Text("重置") }
+                        }
+                        Spacer(Modifier.height(8.dp))
+                        Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                            // 整体移动按钮
+                            var bulkMode by remember { mutableStateOf(true) }
+                            OutlinedButton({ bulkMode = !bulkMode }, Modifier.weight(1f),
+                                colors = ButtonDefaults.outlinedButtonColors(contentColor = if (bulkMode) SecondaryCyan else TextHint)
+                            ) { Text(if (bulkMode) "🔄 整体移动" else "🎯 单独调整") }
+                            Button({
+                                scope.launch {
+                                    val name = schemeName.ifBlank {
+                                        val sdf = java.text.SimpleDateFormat("MMdd-HHmm", java.util.Locale.getDefault())
+                                        "${app.appName}-${layout.type.label}-${sdf.format(java.util.Date())}"
+                                    }
+                                    val coords = markers.mapIndexed { i, m ->
+                                        val key = layout.getOrderedKeys().getOrNull(i)
+                                        PianoKeyCoordinate(i, key?.midiNote ?: (48 + i), m.x.toInt(), m.y.toInt(), 30, 40)
+                                    }
+                                    val repo = CoordinateRepository(context)
+                                    val dm = context.resources.displayMetrics
+                                    repo.saveCoordinate(CoordinateEntity(
+                                        deviceId = repo.generateDeviceId(app.packageName, dm.widthPixels, dm.heightPixels),
+                                        packageName = app.packageName, appName = app.appName,
+                                        screenWidth = dm.widthPixels, screenHeight = dm.heightPixels,
+                                        keyCount = layout.keyCount, calibrationMode = "COMPOSE_REF",
+                                        schemeName = name, layoutType = layout.type.name,
+                                        keyCoordinates = Gson().toJson(coords)
+                                    ))
+                                    withContext(Dispatchers.Main) { Toast.makeText(context, "方案「$name」已保存！", Toast.LENGTH_LONG).show() }
+                                    onBackClick()
+                                }
+                            }, Modifier.weight(2f),
+                                colors = ButtonDefaults.buttonColors(containerColor = PrimaryPurple)
+                            ) { Text("💾 保存方案", color = Color.White, fontWeight = FontWeight.Bold) }
+                        }
+                        if (selectedMarker >= 0) {
+                            Text("选中: ${markers.getOrNull(selectedMarker)?.label ?: ""} (${markers.getOrNull(selectedMarker)?.x?.toInt() ?: 0}, ${markers.getOrNull(selectedMarker)?.y?.toInt() ?: 0})",
+                                color = PrimaryPurpleLight, fontSize = 12.sp, modifier = Modifier.padding(top = 4.dp))
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
+// 标记点数据
+data class CalMarker(val keyIndex: Int, var x: Float, var y: Float, val label: String, val isBlack: Boolean = false)
+
+private fun initMarkers(layout: PianoLayout): List<CalMarker> {
+    val keys = layout.getOrderedKeys()
+    val rows = layout.rows; val perRow = keys.size / rows
+    return keys.mapIndexed { i, k ->
+        val row = k.row; val col = k.col
+        val y = 0.15f + row * (0.7f / rows) + (0.7f / rows / 2)
+        val x = 0.05f + col * (0.9f / perRow) + (0.9f / perRow / 2)
+        CalMarker(i, x, y, k.label, k.isBlack)
+    }
+}
+
+@Composable
+private fun PianoReferenceView(
+    layout: PianoLayout, markers: List<CalMarker>, selectedIdx: Int,
+    onMarkerSelect: (Int) -> Unit, onMarkerDrag: (Int, Float, Float) -> Unit
+) {
+    val density = LocalDensity.current
+    val keys = layout.getOrderedKeys()
+    val rows = layout.rows; val perRow = (keys.size / rows).coerceAtLeast(1)
+    var canvasSize by remember { mutableStateOf(Size.Zero) }
+    var dragIdx by remember { mutableIntStateOf(-1) }
+
+    Canvas(
+        Modifier.fillMaxSize().pointerInput(markers) {
+            detectDragGestures(
+                onDragStart = { offset ->
+                    val w = canvasSize.width; val h = canvasSize.height
+                    for (i in markers.indices.reversed()) {
+                        val mx = markers[i].x * w; val my = markers[i].y * h
+                        val dist = kotlin.math.sqrt((offset.x - mx) * (offset.x - mx) + (offset.y - my) * (offset.y - my))
+                        if (dist < 50f) { dragIdx = i; onMarkerSelect(i); return@detectDragGestures }
+                    }
+                    dragIdx = -1; onMarkerSelect(-1)
+                },
+                onDrag = { change, dragAmount ->
+                    if (dragIdx in markers.indices) {
+                        val w = canvasSize.width; val h = canvasSize.height
+                        val newX = (markers[dragIdx].x * w + dragAmount.x) / w
+                        val newY = (markers[dragIdx].y * h + dragAmount.y) / h
+                        onMarkerDrag(dragIdx, newX.coerceIn(0f, 1f), newY.coerceIn(0f, 1f))
+                    }
+                },
+                onDragEnd = { dragIdx = -1 },
+                onDragCancel = { dragIdx = -1 }
+            )
+        }
+    ) {
+        canvasSize = size
+        val w = size.width; val h = size.height
+        val keyH = (h * 0.7f) / rows
+        val keyW = (w * 0.9f) / perRow
+        val startX = w * 0.05f; val startY = h * 0.15f
+
+        // 绘制琴键背景
+        for (row in 0 until rows) {
+            for (col in 0 until perRow) {
+                val idx = row * perRow + col
+                val k = keys.getOrNull(idx) ?: continue
+                val kx = startX + col * keyW; val ky = startY + row * keyH
+                val isWhite = !k.isBlack
+                if (isWhite) {
+                    drawRect(Color(0xFFF5F5F0), Offset(kx, ky), Size(keyW - 2f, keyH - 2f))
+                    drawRect(Color(0xFF999999), Offset(kx, ky), Size(keyW - 2f, keyH - 2f), style = Stroke(1f))
+                    // 音符标签
+                    drawContext.canvas.nativeCanvas.drawText(
+                        k.label.replace("#", "♯"), kx + keyW / 2, ky + keyH - 12f,
+                        android.graphics.Paint().apply { color = 0xFF666666.toInt(); textSize = 14f * density.density; textAlign = android.graphics.Paint.Align.CENTER }
+                    )
+                }
+            }
+        }
+        // 黑键（绘制在白键上方）
+        for (row in 0 until rows) {
+            for (col in 0 until perRow) {
+                val idx = row * perRow + col
+                val k = keys.getOrNull(idx) ?: continue
+                if (k.isBlack) {
+                    val kx = startX + col * keyW - keyW * 0.25f; val ky = startY + row * keyH
+                    drawRect(Color(0xFF2D2D2D), Offset(kx, ky), Size(keyW * 0.5f, keyH * 0.6f))
+                }
+            }
+        }
+
+        // 标记点
+        markers.forEachIndexed { i, m ->
+            val mx = m.x * w; val my = m.y * h
+            val r = if (i == selectedIdx || i == dragIdx) 22f else 16f
+            drawCircle(Color(0xE06C5CE7), r, Offset(mx, my))
+            drawCircle(Color(0xFFA29BFE), r, Offset(mx, my), style = Stroke(3f))
+            if (i == selectedIdx) drawCircle(Color(0xFF00CEC9), r + 4f, Offset(mx, my), style = Stroke(4f))
+            drawContext.canvas.nativeCanvas.drawText(m.label, mx, my - r - 6f,
+                android.graphics.Paint().apply { color = 0xFFFFFFFF.toInt(); textSize = 16f * density.density; textAlign = android.graphics.Paint.Align.CENTER })
+        }
+
+        // 提示
+        drawContext.canvas.nativeCanvas.drawText("拖动标记对齐参考琴键", w / 2, h * 0.08f,
+            android.graphics.Paint().apply { color = 0x80FFFFFF.toInt(); textSize = 18f * density.density; textAlign = android.graphics.Paint.Align.CENTER })
+    }
+}

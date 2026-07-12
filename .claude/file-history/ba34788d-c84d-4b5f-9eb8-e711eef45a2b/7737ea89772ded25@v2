@@ -1,0 +1,106 @@
+"""
+空间变形特效：镜像、拉伸、分屏、鱼眼、旋转、缩放抖动
+【开发状态：已完成】
+"""
+
+from app.effects.base import BaseEffect, EffectParam
+
+
+class MirrorEffect(BaseEffect):
+    """镜像翻转"""
+    name = "镜像翻转"
+    category = "空间变形"
+    description = "水平或垂直翻转画面"
+    status = "已完成"
+
+    @classmethod
+    def get_param_defs(cls):
+        return [
+            EffectParam("direction", "翻转方向", str, "hflip", options=[("hflip", "左右翻转"), ("vflip", "上下翻转"), ("both", "同时翻转")]),
+        ]
+    def get_filter_string(self, in_label="0:v", out_label="v0"):
+        d = self.get_param("direction") or "hflip"
+        if d == "both":
+            return f"[{in_label}]hflip,vflip[{out_label}]"
+        return f"[{in_label}]{d}[{out_label}]"
+
+
+class StretchEffect(BaseEffect):
+    """画面拉伸/挤压"""
+    name = "画面拉伸"
+    category = "空间变形"
+    description = "破坏原始宽高比进行拉伸或挤压"
+    status = "已完成"
+
+    @classmethod
+    def get_param_defs(cls):
+        return [
+            EffectParam("scale_x", "水平缩放", float, 1.5, 0.1, 5.0, 0.1, suffix="x"),
+            EffectParam("scale_y", "垂直缩放", float, 0.5, 0.1, 5.0, 0.1, suffix="x"),
+        ]
+    def get_filter_string(self, in_label="0:v", out_label="v0"):
+        sx = self.get_param("scale_x") or 1.5
+        sy = self.get_param("scale_y") or 0.5
+        return f"[{in_label}]scale=iw*{sx}:ih*{sy}:flags=neighbor[{out_label}]"
+
+
+class SplitScreenEffect(BaseEffect):
+    """分屏电视墙"""
+    name = "分屏电视墙"
+    category = "空间变形"
+    description = "多画面拼接（2x2、3x3、4x4）"
+    status = "已完成"
+
+    @classmethod
+    def get_param_defs(cls):
+        return [EffectParam("grid", "分屏列数", int, 2, 2, 4, 1)]
+    def get_filter_string(self, in_label="0:v", out_label="v0"):
+        n = self.get_param("grid") or 2
+        if n == 2:
+            return f"[{in_label}]split=4[a][b][c][d];[a][b]hstack[row1];[c][d]hstack[row2];[row1][row2]vstack[{out_label}]"
+        return f"[{in_label}]tile={n}x{n}[{out_label}]"
+
+
+class FisheyeEffect(BaseEffect):
+    """鱼眼变形"""
+    name = "鱼眼变形"
+    category = "空间变形"
+    description = "模拟鱼眼镜头效果"
+    status = "已完成"
+
+    @classmethod
+    def get_param_defs(cls):
+        return [EffectParam("strength", "变形强度", float, 0.3, 0.05, 1.0, 0.05)]
+    def get_filter_string(self, in_label="0:v", out_label="v0"):
+        return f"[{in_label}]lenscorrection=cx=0.5:cy=0.5:k1=-{self.get_param('strength')}:k2=-0.01[{out_label}]"
+
+
+class RotateEffect(BaseEffect):
+    """旋转"""
+    name = "旋转"
+    category = "空间变形"
+    description = "顺时针或逆时针旋转画面"
+    status = "已完成"
+
+    @classmethod
+    def get_param_defs(cls):
+        return [EffectParam("angle", "角度", float, 90, -360, 360, 5, suffix="°")]
+    def get_filter_string(self, in_label="0:v", out_label="v0"):
+        a = self.get_param("angle") or 90
+        rad = a * 3.14159 / 180
+        return f"[{in_label}]rotate={rad}:ow='rotw( {rad} )':oh='roth( {rad} )':c=none[{out_label}]"
+
+
+class ZoomShakeEffect(BaseEffect):
+    """缩放抖动"""
+    name = "缩放抖动"
+    category = "空间变形"
+    description = "快速缩小放大，抽风抖动感"
+    status = "已完成"
+
+    @classmethod
+    def get_param_defs(cls):
+        return [EffectParam("intensity", "抖动强度", float, 0.1, 0.02, 0.5, 0.02)]
+    def get_filter_string(self, in_label="0:v", out_label="v0"):
+        i = self.get_param("intensity") or 0.1
+        return f"[{in_label}]scale=iw*(1+{i}*sin(40*t)):ih*(1+{i}*sin(40*t)):eval=frame[{out_label}]"

@@ -1,0 +1,315 @@
+package com.example.magicpinao.core.accessibility
+
+import android.accessibilityservice.AccessibilityService
+import android.content.Intent
+import android.graphics.Rect
+import android.os.Handler
+import android.os.Looper
+import android.util.Log
+import android.view.accessibility.AccessibilityEvent
+import com.example.magicpinao.core.coordinate.CoordinateManager
+import com.example.magicpinao.core.data.PianoKeyCoordinate
+
+/**
+ * 钢琴自动演奏无障碍服务
+ * 负责发送触摸事件到目标钢琴应用
+ */
+class PianoAccessibilityService : AccessibilityService() {
+
+    companion object {
+        private const val TAG = "PianoAccessibility"
+
+        var instance: PianoAccessibilityService? = null
+            private set
+
+        var isPlaying: Boolean = false
+
+        var targetPackageName: String? = null
+
+        private var touchCaptureListener: ((Int, Int) -> Unit)? = null
+    }
+
+    private val coordinateManager = CoordinateManager()
+    private val handler = Handler(Looper.getMainLooper())
+    private var currentCoordinates: List<PianoKeyCoordinate> = emptyList()
+
+    override fun onServiceConnected() {
+        super.onServiceConnected()
+        instance = this
+        Log.d(TAG, "=== Accessibility Service Connected ===")
+        Log.d(TAG, "Gesture dispatch supported: true")
+        Log.d(TAG, GestureDispatcher.getDiagnostics(this))
+    }
+
+    override fun onAccessibilityEvent(event: AccessibilityEvent?) {
+        event ?: return
+
+        if (event.eventType == AccessibilityEvent.TYPE_WINDOW_STATE_CHANGED) {
+            val packageName = event.packageName?.toString()
+            if (isPlaying && packageName != null && packageName != targetPackageName) {
+                Log.d(TAG, "Window switched from $targetPackageName to $packageName, stopping")
+                stopPerformance()
+            }
+        }
+
+        // 触摸捕获（用于坐标标定）
+        // 支持多种事件类型以提高可靠性
+        val isTouchEvent = event.eventType == AccessibilityEvent.TYPE_VIEW_CLICKED ||
+                event.eventType == AccessibilityEvent.TYPE_GESTURE_DETECTION_START
+
+        if (touchCaptureListener != null && isTouchEvent) {
+            val source = event.source
+            if (source != null) {
+                val rect = Rect()
+                source.getBoundsInScreen(rect)
+                val cx = rect.centerX()
+                val cy = rect.centerY()
+                Log.d(TAG, "Calibration touch captured: ($cx, $cy) from event type ${event.eventType}")
+                touchCaptureListener?.invoke(cx, cy)
+                touchCaptureListener = null
+            }
+        }
+    }
+
+    override fun onInterrupt() {
+        Log.d(TAG, "Service interrupted")
+        stopPerformance()
+    }
+
+    override fun onDestroy() {
+        super.onDestroy()
+        instance = null
+        stopPerformance()
+    }
+
+    /**
+     * 设置琴键坐标配置
+     */
+    fun setCoordinates(coordinates: List<PianoKeyCoordinate>) {
+        currentCoordinates = coordinates
+        Log.d(TAG, "Coordinates set: ${coordinates.size} keys")
+    }
+
+    /**
+     * 开始演奏
+     */
+    fun startPerformance(
+        packageName: String,
+        noteEvents: List<Pair<Long, Int>>
+    ) {
+        if (currentCoordinates.isEmpty()) {
+            Log.e(TAG, "No coordinates set")
+            return
+        }
+
+        targetPackageName = packageName
+        isPlaying = true
+
+        Log.d(TAG, "=== Starting Performance ===")
+        Log.d(TAG, "Target: $packageName, Events: ${noteEvents.size}, Keys: ${currentCoordinates.size}")
+        Log.d(TAG, GestureDispatcher.getDiagnostics(this))
+
+        noteEvents.forEach { (timestamp, keyIndex) ->
+            val delay = timestamp - System.currentTimeMillis()
+            if (delay <= 0) {
+                pressKey(keyIndex)
+            } else {
+                handler.postDelayed({
+                    if (isPlaying) pressKey(keyIndex)
+                }, delay)
+            }
+        }
+    }
+
+    /**
+     * 开始演奏（带坐标）
+     */
+    fun startPerformanceWithCoordinates(
+        packageName: String,
+        noteEvents: List<Pair<Long, Int>>,
+        coordinates: List<PianoKeyCoordinate>
+    ) {
+        currentCoordinates = coordinates
+        startPerformance(packageName, noteEvents)
+    }
+
+    /**
+     * 停止演奏
+     */
+    fun stopPerformance() {
+        isPlaying = false
+        handler.removeCallbacksAndMessages(null)
+        Log.d(TAG, "Performance stopped")
+    }
+
+    /**
+     * 按下指定索引的琴键（使用多层分发策略）
+     */
+    fun pressKey(keyIndex: Int) {
+        if (keyIndex !in currentCoordinates.indices) return
+        val coord = currentCoordinates[keyIndex]
+        if (coord.centerX <= 0 || coord.centerY <= 0) return
+        GestureDispatcher.dispatchTap(this, coord.centerX, coord.centerY, 30L)
+    }
+
+    /**
+     * 测试点击（同步等待结果，用于诊断）
+     */
+    fun testTap(x: Int, y: Int): Pair<Boolean, String> {
+        return try {
+            val path = android.graphics.Path().apply { moveTo(x.toFloat(), y.toFloat()) }
+            val stroke = android.accessibilityservice.GestureDescription.StrokeDescription(path, 0, 30)
+            val gesture = android.accessibilityservice.GestureDescription.Builder().addStroke(stroke).build()
+            val latch = java.util.concurrent.CountDownLatch(1)
+            var result = "unknown"
+            var success = false
+            val dispatched = this.dispatchGesture(gesture,
+                object : AccessibilityService.GestureResultCallback() {
+                    override fun onCompleted(desc: android.accessibilityservice.GestureDescription?) {
+                        success = true; result = "completed"; latch.countDown()
+                    }
+                    override fun onCancelled(desc: android.accessibilityservice.GestureDescription?) {
+                        success = false; result = "cancelled"; latch.countDown()
+                    }
+                }, null)
+            if (dispatched) {
+                val timedOut = !latch.await(2000, java.util.concurrent.TimeUnit.MILLISECONDS)
+                if (timedOut) { result = "timeout (2s)"; success = false }
+            } else { result = "dispatchGesture returned false"; success = false }
+            Pair(success, result)
+        } catch (e: Exception) {
+            Pair(false, "Exception: ${e.message}")
+        }
+    }
+
+    /**
+     * 自动识别当前应用的琴键
+     */
+    fun autoDetectKeys(keyCount: Int = 21): List<PianoKeyCoordinate>? {
+        val root = rootInActiveWindow ?: return null
+        val dm = resources.displayMetrics
+        return coordinateManager.autoDetectPianoKeys(root, keyCount, dm.widthPixels, dm.heightPixels)
+    }
+
+    /**
+     * 打开目标应用
+     */
+    fun openTargetApp(packageName: String) {
+        val intent = packageManager.getLaunchIntentForPackage(packageName)
+        if (intent != null) {
+            intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+            startActivity(intent)
+            Log.d(TAG, "Opening app: $packageName")
+        } else {
+            Log.e(TAG, "App not found: $packageName")
+        }
+    }
+
+    fun setTouchCaptureListener(listener: (Int, Int) -> Unit) {
+        touchCaptureListener = listener
+    }
+
+    fun clearTouchCaptureListener() {
+        touchCaptureListener = null
+    }
+
+    // ===== 标定触发按钮（由无障碍服务直接创建，保证在所有应用之上） =====
+
+    /**
+     * 通过无障碍服务创建标定触发按钮（TYPE_ACCESSIBILITY_OVERLAY 最高优先级）
+     */
+    fun showCalibrationTrigger(
+        layoutLabel: String,
+        totalKeys: Int,
+        onClick: () -> Unit
+    ) {
+        // 先移除旧的
+        hideCalibrationTrigger()
+
+        val wm = getSystemService(WINDOW_SERVICE) as android.view.WindowManager
+        val density = resources.displayMetrics.density
+
+        val bg = android.graphics.drawable.GradientDrawable().apply {
+            shape = android.graphics.drawable.GradientDrawable.RECTANGLE
+            cornerRadius = 20f * density
+            setColor(android.graphics.Color.parseColor("#F01A1A2E"))
+            setStroke((2f * density).toInt(), android.graphics.Color.parseColor("#FF6C5CE7"))
+        }
+
+        val card = android.widget.LinearLayout(this).apply {
+            orientation = android.widget.LinearLayout.VERTICAL
+            gravity = android.view.Gravity.CENTER
+            background = bg
+            setPadding((18 * density).toInt(), (14 * density).toInt(), (18 * density).toInt(), (14 * density).toInt())
+            tag = "acc_cal_trigger"
+
+            addView(android.widget.TextView(context).apply {
+                text = "📍"; textSize = 28f; gravity = android.view.Gravity.CENTER
+            })
+            addView(android.widget.TextView(context).apply {
+                text = "开始标定"; textSize = 15f
+                setTextColor(android.graphics.Color.WHITE); gravity = android.view.Gravity.CENTER
+                setTypeface(null, android.graphics.Typeface.BOLD)
+            })
+            addView(android.widget.TextView(context).apply {
+                text = "$layoutLabel | ${totalKeys}键"; textSize = 11f
+                setTextColor(0xFFA29BFE.toInt()); gravity = android.view.Gravity.CENTER
+            })
+
+            setOnClickListener {
+                hideCalibrationTrigger()
+                onClick()
+            }
+        }
+
+        val lp = android.view.WindowManager.LayoutParams().apply {
+            // 使用 TYPE_SYSTEM_ERROR — Android 最高层级，连状态栏都能覆盖
+            @Suppress("DEPRECATION")
+            type = android.view.WindowManager.LayoutParams.TYPE_SYSTEM_ERROR
+            flags = android.view.WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE or
+                    android.view.WindowManager.LayoutParams.FLAG_NOT_TOUCH_MODAL or
+                    android.view.WindowManager.LayoutParams.FLAG_LAYOUT_IN_SCREEN
+            format = android.graphics.PixelFormat.TRANSLUCENT
+            width = android.view.WindowManager.LayoutParams.WRAP_CONTENT
+            height = android.view.WindowManager.LayoutParams.WRAP_CONTENT
+            gravity = android.view.Gravity.TOP or android.view.Gravity.CENTER_HORIZONTAL
+            y = (120 * density).toInt()
+        }
+
+        var isDrag = false
+        var sx = 0f; var sy = 0f
+        var wx = 0; var wy = 0
+        card.setOnTouchListener { _, event ->
+            when (event.action) {
+                android.view.MotionEvent.ACTION_DOWN -> {
+                    sx = event.rawX; sy = event.rawY
+                    wx = lp.x; wy = lp.y; isDrag = false; false
+                }
+                android.view.MotionEvent.ACTION_MOVE -> {
+                    val dx = (event.rawX - sx).toInt()
+                    val dy = (event.rawY - sy).toInt()
+                    if (!isDrag && (kotlin.math.abs(dx) > 10 || kotlin.math.abs(dy) > 10)) isDrag = true
+                    if (isDrag) { lp.x = wx + dx; lp.y = wy + dy; wm.updateViewLayout(card, lp) }
+                    true
+                }
+                else -> { isDrag = false; false }
+            }
+        }
+
+        calTriggerView = card
+        wm.addView(card, lp)
+        Log.d(TAG, "Calibration trigger shown via accessibility service")
+    }
+
+    fun hideCalibrationTrigger() {
+        try {
+            calTriggerView?.let {
+                val wm = getSystemService(WINDOW_SERVICE) as android.view.WindowManager
+                wm.removeView(it)
+            }
+        } catch (_: Exception) {}
+        calTriggerView = null
+    }
+
+    private var calTriggerView: android.view.View? = null
+}

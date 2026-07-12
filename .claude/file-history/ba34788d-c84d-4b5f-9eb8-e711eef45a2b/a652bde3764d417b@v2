@@ -1,0 +1,62 @@
+"""
+叠加/混合特效：残影拖尾、发光、边缘检测、浮雕
+【开发状态：已完成】
+"""
+
+from app.effects.base import BaseEffect, EffectParam
+
+
+class GhostTrailEffect(BaseEffect):
+    """残影拖尾"""
+    name = "残影拖尾"
+    category = "叠加/混合"
+    description = "运动物体留下半透明残影"
+    status = "已完成"
+    @classmethod
+    def get_param_defs(cls):
+        return [EffectParam("frames", "残影帧数", int, 5, 2, 20, 1)]
+    def get_filter_string(self, in_label="0:v", out_label="v0"):
+        n = self.get_param("frames") or 5
+        return f"[{in_label}]tmix=frames={n}:weights=1 0.8 0.6 0.4 0.2[{out_label}]"
+
+
+class GlowEffect(BaseEffect):
+    """发光/光晕"""
+    name = "发光"
+    category = "叠加/混合"
+    description = "亮部扩散发光效果"
+    status = "已完成"
+    @classmethod
+    def get_param_defs(cls):
+        return [EffectParam("sigma", "发光范围", float, 8.0, 2.0, 20.0, 0.5)]
+    def get_filter_string(self, in_label="0:v", out_label="v0"):
+        s = self.get_param("sigma") or 8.0
+        return (
+            f"[{in_label}]split=2[orig][glow];"
+            f"[glow]gblur=sigma={s}[blurred];"
+            f"[orig][blurred]blend=all_mode=screen[{out_label}]"
+        )
+
+
+class EdgeDetectEffect(BaseEffect):
+    """边缘检测"""
+    name = "边缘检测"
+    category = "叠加/混合"
+    description = "只保留轮廓线条"
+    status = "已完成"
+    @classmethod
+    def get_param_defs(cls): return []
+    def get_filter_string(self, in_label="0:v", out_label="v0"):
+        return f"[{in_label}]edgedetect=low=0.1:high=0.3[{out_label}]"
+
+
+class EmbossEffect(BaseEffect):
+    """浮雕效果"""
+    name = "浮雕"
+    category = "叠加/混合"
+    description = "立体雕刻质感"
+    status = "已完成"
+    @classmethod
+    def get_param_defs(cls): return []
+    def get_filter_string(self, in_label="0:v", out_label="v0"):
+        return f"[{in_label}]format=gray,geq='p(X,Y)+128-p(X-1,Y-1)'[{out_label}]"

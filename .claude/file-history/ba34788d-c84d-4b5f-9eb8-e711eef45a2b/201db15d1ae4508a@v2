@@ -1,0 +1,201 @@
+"""
+HelpDialog — 使用帮助弹窗
+功能介绍 + 操作指南 + 特效说明
+【开发状态：已完成】
+"""
+
+from PyQt6.QtWidgets import (
+    QDialog, QWidget, QVBoxLayout, QHBoxLayout, QLabel, QPushButton,
+    QTabWidget, QTextEdit,
+)
+from PyQt6.QtCore import Qt
+from app.theme import COLORS
+
+HELP_HTML = """
+<h2>🎬 MagicVideo 使用帮助</h2>
+
+<h3>📥 下载标签页</h3>
+<ul>
+<li><b>粘贴链接</b> — 支持抖音、快手、YouTube、B站等 1800+ 平台视频链接</li>
+<li><b>解析视频</b> — 自动获取封面、标题、作者、时长、播放量等信息</li>
+<li><b>选择画质</b> — 多版本可选（B站等平台提供多个分辨率）</li>
+<li><b>下载视频</b> — 保存到本地，支持进度显示</li>
+<li><b>▶ 播放</b> — 下载完成后点击播放按钮，自动跳转到工作台</li>
+</ul>
+
+<h3>🎬 工作台标签页</h3>
+
+<h4>▶ 视频播放</h4>
+<ul>
+<li>基于 VLC 专业播放器，支持所有视频格式</li>
+<li><b>播放/暂停</b> — 点击 ▶ 按钮或按空格键</li>
+<li><b>快进</b> — 拖动进度条跳转到任意位置</li>
+<li><b>裁剪设点</b> — 播放到目标位置，点击"设起点"/"设终点"标记裁剪范围</li>
+</ul>
+
+<h4>🔄 格式转换</h4>
+<ul>
+<li>选择目标格式 → 点击"转换"</li>
+<li>支持: MP4, MOV, AVI, MKV, WebM, MP3, WAV, GIF</li>
+</ul>
+
+<h4>🔊 音频处理</h4>
+<ul>
+<li><b>提取音频</b> — 从视频中分离出 MP3 音频文件</li>
+<li><b>静音视频</b> — 去除视频中的音频轨道</li>
+<li><b>替换BGM</b> — 选择音频文件替换视频原声</li>
+<li><b>调整音量</b> — 设置音量比例（0.1 ~ 3.0 倍）</li>
+</ul>
+
+<h4>📝 字幕处理</h4>
+<ul>
+<li><b>烧录字幕</b> — 选择 SRT/ASS 字幕文件，永久嵌入视频画面</li>
+</ul>
+
+<h4>🖼 帧处理</h4>
+<ul>
+<li><b>截取当前帧</b> — 保存当前画面为 PNG 图片</li>
+<li><b>生成 GIF</b> — 将裁剪范围内的片段转为 GIF 动图</li>
+</ul>
+
+<h4>🔗 视频拼接</h4>
+<ul>
+<li>点击 + 添加多个视频文件</li>
+<li>点击"合并拼接"将所有视频按顺序合并</li>
+</ul>
+
+<h4>✦ 鬼畜特效</h4>
+<ul>
+<li><b>添加特效</b> — 展开特效分类 → 双击特效名称添加</li>
+<li><b>调整参数</b> — 点击已添加的特效 → 右侧参数面板调整</li>
+<li><b>启用/禁用</b> — 勾选"启用"开关可预览效果</li>
+<li><b>移除</b> — 选中特效 → 点击"移除"</li>
+<li>特效按列表顺序从上到下依次应用</li>
+</ul>
+
+<h3>📦 导出标签页</h3>
+<ul>
+<li>选择输出格式、分辨率、画质</li>
+<li>点击"开始导出"渲染最终视频</li>
+<li>导出完成后自动打开输出文件夹</li>
+</ul>
+"""
+
+EFFECT_HELP = """
+<h2>✦ 鬼畜特效说明</h2>
+
+<h3>⏱ 时间操控</h3>
+<table width='100%'>
+<tr><td><b>变速</b></td><td>改变播放速度，2x快进/0.5x慢放</td></tr>
+<tr><td><b>洗脑循环</b></td><td>片段重复播放 N 次</td></tr>
+<tr><td><b>倒放</b></td><td>画面和声音完全反向</td></tr>
+<tr><td><b>时间暂停</b></td><td>指定位置冻结 N 秒</td></tr>
+<tr><td><b>跳帧卡顿</b></td><td>画面像卡碟一样重复某几帧</td></tr>
+<tr><td><b>渐变速</b></td><td>速度平滑过渡（当前简化实现）</td></tr>
+</table>
+
+<h3>🔲 空间变形</h3>
+<table width='100%'>
+<tr><td><b>镜像翻转</b></td><td>左右/上下翻转画面</td></tr>
+<tr><td><b>画面拉伸</b></td><td>破坏宽高比的横向/纵向拉伸</td></tr>
+<tr><td><b>分屏电视墙</b></td><td>2x2/3x3/4x4 多画面拼接</td></tr>
+<tr><td><b>鱼眼变形</b></td><td>模拟鱼眼镜头弯曲效果</td></tr>
+<tr><td><b>旋转</b></td><td>任意角度旋转画面</td></tr>
+<tr><td><b>缩放抖动</b></td><td>快速缩小放大，抽搐抖动感</td></tr>
+</table>
+
+<h3>🎨 色彩特效</h3>
+<table width='100%'>
+<tr><td><b>反色</b></td><td>颜色完全反转（负片效果）</td></tr>
+<tr><td><b>灰度</b></td><td>黑白画面</td></tr>
+<tr><td><b>色相循环</b></td><td>色相随时间彩虹式变化</td></tr>
+<tr><td><b>RGB分离</b></td><td>三通道偏移，故障艺术风格</td></tr>
+<tr><td><b>色彩量化</b></td><td>减少颜色数，像素画效果</td></tr>
+</table>
+
+<h3>🌫 模糊/噪点</h3>
+<table width='100%'>
+<tr><td><b>高斯模糊</b></td><td>可调强度的整体模糊</td></tr>
+<tr><td><b>马赛克</b></td><td>可调像素块大小</td></tr>
+<tr><td><b>动态模糊</b></td><td>运动方向拖影</td></tr>
+<tr><td><b>电视雪花</b></td><td>随机噪点模拟老电视</td></tr>
+<tr><td><b>扫描线</b></td><td>CRT 显示器扫描线效果</td></tr>
+<tr><td><b>胶片颗粒</b></td><td>老电影胶片质感</td></tr>
+</table>
+
+<h3>🖼 叠加/混合</h3>
+<table width='100%'>
+<tr><td><b>残影拖尾</b></td><td>运动物体半透明残影</td></tr>
+<tr><td><b>发光</b></td><td>亮部区域扩散发光</td></tr>
+<tr><td><b>边缘检测</b></td><td>只保留轮廓线条</td></tr>
+<tr><td><b>浮雕</b></td><td>立体雕刻质感</td></tr>
+</table>
+
+<h3>🟢 绿幕抠像</h3>
+<table width='100%'>
+<tr><td><b>绿幕抠像</b></td><td>去除绿色/蓝色背景</td></tr>
+</table>
+
+<h3>🔊 音频魔改</h3>
+<table width='100%'>
+<tr><td><b>音高调整</b></td><td>唐老鸭/大魔王效果</td></tr>
+<tr><td><b>回声混响</b></td><td>空间感和回音</td></tr>
+<tr><td><b>机器人音效</b></td><td>金属质感声音</td></tr>
+<tr><td><b>音频倒放</b></td><td>声音反向播放</td></tr>
+<tr><td><b>音频卡壳</b></td><td>指定段重复播放</td></tr>
+<tr><td><b>声道摇摆</b></td><td>声音左右快速摆动</td></tr>
+</table>
+
+<h3>🎁 组合特效</h3>
+<table width='100%'>
+<tr><td><b>蒸汽波</b></td><td>慢放 + 音高降低 + 混响 + 色相</td></tr>
+<tr><td><b>CRT故障</b></td><td>RGB偏移 + 雪花 + 扫描线</td></tr>
+<tr><td><b>鬼畜三连</b></td><td>变速 + 倒放 + 循环</td></tr>
+<tr><td><b>迷幻梦境</b></td><td>模糊 + 色相循环 + 残影</td></tr>
+<tr><td><b>暴力快切</b></td><td>高频率跳帧切换</td></tr>
+</table>
+
+<p style='color:#9396a8;font-size:12px;margin-top:20px;'>
+📌 特效按列表中顺序从上到下依次应用。多个特效可叠加使用。调整参数后效果在导出时生效。
+</p>
+"""
+
+
+class HelpDialog(QDialog):
+    """使用帮助弹窗"""
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.setWindowTitle("MagicVideo 使用帮助")
+        self.resize(760, 620)
+        self.setStyleSheet(f"""
+            QDialog {{ background-color: {COLORS['bg_secondary']}; }}
+            QTabWidget::pane {{ border: 1px solid {COLORS['border']}; border-radius: 6px; }}
+        """)
+        layout = QVBoxLayout(self)
+
+        tabs = QTabWidget()
+        tabs.addTab(self._html_page(HELP_HTML), "📖 使用指南")
+        tabs.addTab(self._html_page(EFFECT_HELP), "✦ 特效说明")
+        layout.addWidget(tabs)
+
+        close_btn = QPushButton("关闭")
+        close_btn.clicked.connect(self.accept)
+        close_btn.setStyleSheet(f"""
+            QPushButton {{ background:{COLORS['accent']}; color:#fff; border-radius:6px;
+            padding:10px 32px; font-size:14px; }}
+        """)
+        layout.addWidget(close_btn, alignment=Qt.AlignmentFlag.AlignRight)
+
+    def _html_page(self, html: str) -> QWidget:
+        w = QWidget()
+        lay = QVBoxLayout(w)
+        edit = QTextEdit()
+        edit.setReadOnly(True)
+        edit.setHtml(html.replace("<table", "<table border='1' cellpadding='4' cellspacing='0'"))
+        edit.setStyleSheet(f"""
+            QTextEdit {{ background:{COLORS['bg_primary']}; color:{COLORS['text_primary']};
+            border: none; font-size: 13px; }}
+        """)
+        lay.addWidget(edit)
+        return w

@@ -1,0 +1,1180 @@
+MagicPiano 个人中心功能详细说明文档
+===================================
+
+版本: v3.1.71
+更新日期: 2026-06-18
+
+
+一、个人中心整体架构
+==================
+
+个人中心（UserProfile）是MagicPiano应用的用户信息管理模块，采用Tab选项卡设计，包含以下主要功能区域：
+
+【页面结构】
+-----------
+┌─────────────────────────────────────┐
+│         头部信息区 (Header)          │
+│  - 注册时间 + VIP试用期信息          │
+│  - 账号名称                          │
+│  - 邀请人（如有）                    │
+│  - 头像 + 邀请码                     │
+└─────────────────────────────────────┘
+┌─────────────────────────────────────┐
+│         Tab选项卡区域                │
+│  ┌──────┬──────┬──────┬──────┐     │
+│  │激活  │充值  │投资  │推广  │ ... │
+│  │记录  │记录  │记录  │记录  │     │
+│  └──────┴──────┴──────┴──────┘     │
+└─────────────────────────────────────┘
+
+【核心组件】
+-----------
+1. UserProfile - 主容器（user_center.py）
+2. ActiveVipPage - 激活记录页（active_vip.py）
+3. RechargeRecordPage - 充值记录页（charge_record.py）
+4. InvestRecordPage - 投资记录页（invest_record.py）
+5. PromotionRecordPage - 推广记录页（promotion_record.py）
+6. WalletPage - 钱包页（wallet.py）
+7. WithdrawalListDialog - 提现记录对话框（withdraw_record.py）
+8. IncomeDetailListDialog - 收支明细对话框（income_detail.py）
+
+
+二、头部信息区详细说明
+====================
+
+【显示字段】
+-----------
+1. 📅 注册时间: YYYY-MM-DD HH:MM:SS
+   - 数据来源: login_user["created_at"]
+   - 多语言标签:
+     * 简体中文: "📅 注册时间: "
+     * 繁体中文: "📅 註冊時間: "
+     * 英文: "📅 Registration Time: "
+
+2. -赠送vip过期时间: YYYY-MM-DD HH:MM:SS（仅试用期内显示）
+   - 计算方式: created_at + 10分钟
+   - 多语言标签:
+     * 简体中文: "-赠送vip过期时间:"
+     * 繁体中文: "-贈送vip過期時間:"
+     * 英文: "-Gift vip expiration time:"
+
+3. 👤 账号名称: user@example.com
+   - 数据来源: login_user["account"]
+   - 多语言标签:
+     * 简体中文: "👤 账号名称: "
+     * 繁体中文: "👤 用戶名稱: "
+     * 英文: "👤 Account Name: "
+
+4. 🤝 邀请人: inviter_account（仅当pushUser不为空时显示）
+   - 数据来源: login_user["pushUser"]
+   - 多语言标签:
+     * 简体中文: "🤝 邀请人: "
+     * 繁体中文: "🤝 推薦人: "
+     * 英文: "🤝 Push User: "
+
+5. 邀请码：XXXXXX（可点击复制）
+   - 数据来源: login_user["push_code"]
+   - 多语言标签:
+     * 简体中文: "邀请码："
+     * 繁体中文: "邀請碼："
+     * 英文: "Push Code："
+   - 功能: 点击后复制到剪贴板
+   - Tooltip提示: "点击后可复制" / "點擊可複製" / "Click to copy"
+
+6. 用户头像（圆形，30x30像素）
+   - 数据来源: login_user["avatar"] URL
+   - 功能: 点击可更换头像
+   - 样式: RoundedImageLabel圆角图片
+
+【显示逻辑】
+-----------
+试用期判断逻辑：
+```python
+from datetime import datetime, timedelta
+
+# 1. 获取注册时间
+initial_time = self.login_user["created_at"]
+dt = datetime.strptime(initial_time, "%Y-%m-%d %H:%M:%S")
+
+# 2. 计算试用期结束时间（+10分钟）
+new_dt = dt + timedelta(minutes=10)
+new_time = new_dt.strftime("%Y-%m-%d %H:%M:%S")
+
+# 3. 获取当前时间
+current_time = datetime.now()
+current_time_formatted = current_time.strftime("%Y-%m-%d %H:%M:%S")
+
+# 4. 根据试用期状态显示不同内容
+if current_time_formatted > new_time:
+    # 已超过试用期，只显示注册时间
+    user_id_label = QLabel("📅 注册时间: " + str(self.login_user["created_at"]))
+else:
+    # 仍在试用期内，显示注册时间和试用期结束时间
+    user_id_label = QLabel(
+        "📅 注册时间: " + str(self.login_user["created_at"]) + 
+        "-赠送vip过期时间:" + new_time
+    )
+```
+
+显示规则：
+- ✅ 试用期内：显示"注册时间"和"赠送vip过期时间"
+- ✅ 超过试用期：只显示"注册时间"
+- ✅ 有邀请人：显示"邀请人"字段
+- ✅ 无邀请人：隐藏"邀请人"字段
+
+
+三、头像上传功能
+===============
+
+【触发方式】
+-----------
+点击头像图标 → 弹出文件选择对话框
+
+【验证规则】
+-----------
+1. 文件大小限制: ≤ 1MB (1024 × 1024 bytes)
+2. 文件格式限制: .png, .jpg, .jpeg, .bmp
+3. 超时时间: 无明确限制（依赖requests默认超时）
+
+【上传流程】
+-----------
+```
+用户点击头像
+  ↓
+打开文件选择对话框
+  ↓
+用户选择图片文件
+  ↓
+验证文件大小（≤1MB）
+  ├─ 超过 → 提示"文件大小不能超过1MB"，终止
+  └─ 符合 → 继续
+  ↓
+验证文件格式（PNG/JPG/JPEG/BMP）
+  ├─ 不符合 → 提示"请选择有效的图片文件"，终止
+  └─ 符合 → 继续
+  ↓
+显示进度对话框"上传中..."
+  ↓
+调用上传API
+  ↓
+服务器返回结果
+  ├─ 成功 → 更新本地login_user
+  │         保存到QSettings
+  │         发送user_avatar_signal信号
+  │         下载并显示新头像
+  │         提示"设置头像成功！"
+  └─ 失败 → 提示错误信息
+  ↓
+关闭进度对话框
+```
+
+【API接口】
+-----------
+URL: POST http://39.107.213.164:8090/api/user/avatar/upload
+请求类型: multipart/form-data
+请求参数:
+- file: 图片文件（二进制）
+Headers:
+- Authorization: {token}
+
+响应示例（成功）:
+```json
+{
+    "code": 200,
+    "message": "上传成功",
+    "data": {
+        "url": "https://example.com/avatar/xxx.jpg"
+    }
+}
+```
+
+响应示例（失败）:
+```json
+{
+    "code": 非200,
+    "message": "错误描述"
+}
+```
+
+【代码实现】
+-----------
+```python
+def on_avatar_clicked(self):
+    file_dialog = QFileDialog(self)
+    file_dialog.setNameFilter("Images (*.png *.jpg *.jpeg *.bmp)")
+    
+    if file_dialog.exec():
+        selected_files = file_dialog.selectedFiles()
+        if selected_files:
+            image_path = selected_files[0]
+            
+            # 检查文件大小
+            file_size = os.path.getsize(image_path)
+            if file_size > 1024 * 1024:
+                QMessageBox.warning(self, "提示", "文件大小不能超过1MB")
+                return
+            
+            # 检查文件类型
+            allowed_extensions = {'.png', '.jpg', '.jpeg', '.bmp'}
+            file_extension = os.path.splitext(image_path)[1].lower()
+            if file_extension not in allowed_extensions:
+                QMessageBox.warning(self, "提示", "请选择有效的图片文件（PNG、JPG、JPEG、BMP）")
+                return
+            
+            # 显示进度对话框
+            progress_dialog = QProgressDialog("上传中...", None, 0, 0, self)
+            progress_dialog.setWindowTitle("请稍候")
+            progress_dialog.setWindowModality(Qt.WindowModality.WindowModal)
+            progress_dialog.setCancelButton(None)
+            progress_dialog.show()
+            QApplication.processEvents()
+            
+            try:
+                with open(image_path, "rb") as image_file:
+                    files = {"file": image_file}
+                    response = requests.post(
+                        "http://39.107.213.164:8090/api/user/avatar/upload",
+                        files=files,
+                        headers=global_headers
+                    )
+                    
+                    progress_dialog.close()
+                    
+                    res = response.json()
+                    if res.get("code") == 200:
+                        # 更新本地数据
+                        self.login_user["avatar"] = res.get('data')['url']
+                        self.app_setting.setValue("login_user", json.dumps(self.login_user))
+                        self.user_avatar_signal.emit(1)
+                        
+                        # 下载并显示新头像
+                        response = requests.get(self.login_user.get("avatar"))
+                        if response.status_code == 200:
+                            pixmap = QPixmap()
+                            pixmap.loadFromData(response.content)
+                            self.avatar_label_image.setPixmap(pixmap)
+                            self.avatar_label_image.update()
+                            QMessageBox.information(self, "成功", "设置头像成功！")
+                        else:
+                            QMessageBox.warning(self, "提示", "头像下载失败")
+                    else:
+                        QMessageBox.warning(self, "上传失败", res.get("message", "未知错误"))
+            
+            except Exception as e:
+                progress_dialog.close()
+                QMessageBox.critical(self, "错误", f"上传过程中发生错误：{str(e)}")
+```
+
+
+四、Tab选项卡功能详解
+===================
+
+【Tab列表】
+-----------
+目前实现的Tab包括：
+1. 激活记录（ActiveVipPage）
+2. 充值记录（RechargeRecordPage）- 未在主界面添加
+3. 投资记录（InvestRecordPage）- 未在主界面添加
+4. 推广记录（PromotionRecordPage）- 未在主界面添加
+5. 钱包（WalletPage）- 未在主界面添加
+
+注意：当前代码只添加了"激活记录"Tab，其他Tab可能在其他版本或分支中使用。
+
+
+五、激活记录页面（ActiveVipPage）
+================================
+
+【页面布局】
+-----------
+┌─────────────────────────────────────┐
+│ [激活] [刷新]                       │
+├─────────────────────────────────────┤
+│ ID | 激活码 | VIP时长 | 激活时间 | 过期时间 │
+│----|--------|---------|----------|----------│
+│ 1  | XXXX   | 30      | 2026-... | 2026-... │
+│ 2  | YYYY   | 60      | 2026-... | 2026-... │
+├─────────────────────────────────────┤
+│ [上一页]  1/5  [下一页]             │
+└─────────────────────────────────────┘
+
+【表格列定义】
+-------------
+共5列：
+1. ID - 激活记录ID
+2. 激活码 - 使用的激活码
+3. VIP时长(天数) - 获得的天数
+4. 激活时间 - 激活的时间点
+5. 过期时间 - VIP到期时间（已过期会标注）
+
+多语言表头：
+- 简体中文: ['ID', '激活码', 'VIP时长(天数)', '激活时间', '过期时间']
+- 繁体中文: ['ID', '激活碼', 'VIP時長(天數)', '激活時間', '過期時間']
+- 英文: ['ID', 'Activation Code', 'VIP Duration(Days)', 'Activation Time', 'Expiration Time']
+
+【按钮功能】
+-----------
+1. 激活按钮
+   - 功能: 打开激活码输入对话框
+   - 触发: ActivationDialog
+   - 位置: active_vip.py → recharge()方法
+
+2. 刷新按钮
+   - 功能: 重新加载第一页数据
+   - 触发: load_data(page=1)
+
+3. 上一页/下一页
+   - 功能: 翻页浏览
+   - 范围: 1 ~ total_pages
+
+【API接口】
+-----------
+URL: GET http://39.107.213.164:8090/api/user/code/list
+请求参数:
+- page: 页码（从1开始）
+- size: 每页数量（默认10）
+Headers:
+- Authorization: {token}
+超时时间: 5秒
+
+响应数据结构:
+```json
+{
+    "code": 200,
+    "data": {
+        "data": [
+            {
+                "ID": 1,
+                "Code": "ACTIVATE123",
+                "VIPDay": 30,
+                "CreatedTime": "2026-06-18 10:00:00",
+                "Expire": "2026-07-18 10:00:00"
+            }
+        ],
+        "total": 50
+    }
+}
+```
+
+【分页逻辑】
+-----------
+```python
+# 计算总页数
+if res.get("data")['total'] > 0:
+    self.total_pages = math.ceil(res.get("data")['total'] / self.page_size)
+else:
+    self.total_pages = 0
+
+# 显示当前页/总页数
+self.page_label.setText("{}/{}".format(self.current_page, self.total_pages))
+```
+
+【过期判断逻辑】
+---------------
+```python
+# 获取当前时间
+current_time = datetime.now()
+current_time_formatted = current_time.strftime("%Y-%m-%d %H:%M:%S")
+
+for row, item in enumerate(self.list):
+    # 获取过期时间
+    initial_time = item['Expire']
+    dt = datetime.strptime(initial_time, "%Y-%m-%d %H:%M:%S")
+    new_time = dt.strftime("%Y-%m-%d %H:%M:%S")
+    
+    # 判断是否过期
+    if new_time < current_time_formatted:
+        # 已过期，添加标记
+        self.table_widget.setItem(row, 4, QTableWidgetItem("(已过期)" + str(item['Expire'])))
+    else:
+        # 未过期
+        self.table_widget.setItem(row, 4, QTableWidgetItem(str(item['Expire'])))
+```
+
+【数据显示示例】
+---------------
+正常记录:
+```
+ID: 1
+激活码: ACT123456
+VIP时长: 30
+激活时间: 2026-06-01 10:00:00
+过期时间: 2026-07-01 10:00:00
+```
+
+已过期记录:
+```
+ID: 2
+激活码: ACT789012
+VIP时长: 30
+激活时间: 2026-05-01 10:00:00
+过期时间: (已过期)2026-06-01 10:00:00
+```
+
+
+六、充值记录页面（RechargeRecordPage）
+====================================
+
+【页面布局】
+-----------
+┌─────────────────────────────────────┐
+│ [我要充值] [刷新]                   │
+├─────────────────────────────────────┤
+│ ID | 金额 | VIP天数 | 时间 | 过期 | 状态 │
+│----|------|---------|------|------|------│
+│ 1  | 100  | 30      | ...  | ...  | 已生效│
+├─────────────────────────────────────┤
+│ [上一页]  1/3  [下一页]             │
+└─────────────────────────────────────┘
+
+【表格列定义】
+-------------
+共6列：
+1. ID - 充值记录ID
+2. 充值金额 - 充值的人民币金额
+3. VIP时长(天数) - 获得的VIP天数
+4. 充值时间 - 提交充值的时间
+5. 过期时间 - VIP到期时间
+6. 状态 - 待客服确认 / 已生效
+
+【按钮功能】
+-----------
+1. 我要充值按钮
+   - 功能: 打开充值申请对话框
+   - 触发: RechargeDialog
+   - 位置: charge_form.py
+
+2. 刷新按钮
+   - 功能: 重新加载第一页数据
+
+【API接口】
+-----------
+URL: GET http://39.107.213.164:8090/api/user/charge/record
+请求参数:
+- page: 页码
+- size: 每页数量（默认10）
+Headers:
+- Authorization: {token}
+超时时间: 5秒
+
+响应数据结构:
+```json
+{
+    "code": 200,
+    "data": {
+        "data": [
+            {
+                "ID": 1,
+                "ChargeMoney": 100,
+                "VIPDay": 30,
+                "CreatedTime": "2026-06-18 10:00:00",
+                "Expire": "2026-07-18 10:00:00",
+                "Confirm": 1
+            }
+        ],
+        "total": 20
+    }
+}
+```
+
+【状态判断逻辑】
+---------------
+```python
+if item['Confirm'] == 2:
+    self.table_widget.setItem(row, 5, QTableWidgetItem('待客服确认'))
+else:
+    self.table_widget.setItem(row, 5, QTableWidgetItem('已生效'))
+```
+
+状态说明：
+- Confirm = 1: 已生效
+- Confirm = 2: 待客服确认
+
+
+七、投资记录页面（InvestRecordPage）
+===================================
+
+【页面布局】
+-----------
+┌─────────────────────────────────────┐
+│ [我要投资] [刷新]                   │
+├─────────────────────────────────────┤
+│ ID | 金额 | 比例 | VIP | 时间 | 过期 | 状态 │
+│----|------|------|-----|------|------|------│
+│ 1  | 500  | 10%  | 60  | ...  | ...  | 已生效│
+├─────────────────────────────────────┤
+│ [上一页]  1/2  [下一页]             │
+└─────────────────────────────────────┘
+
+【表格列定义】
+-------------
+共7列：
+1. ID - 投资记录ID
+2. 投资金额 - 投资的人民币金额
+3. 收入比例 - 推广收益分成比例
+4. 赠送vip时长(天) - 投资赠送的VIP天数
+5. 提交时间 - 提交投资的时间
+6. 过期时间 - VIP到期时间
+7. 状态 - 待客服确认 / 已生效
+
+【按钮功能】
+-----------
+1. 我要投资按钮
+   - 功能: 打开投资申请对话框
+   - 触发: InvestDialog
+   - 位置: invest_form.py
+
+2. 刷新按钮
+   - 功能: 重新加载第一页数据
+
+【API接口】
+-----------
+URL: GET http://39.107.213.164:8090/api/user/invest/record
+请求参数:
+- page: 页码
+- size: 每页数量（默认10）
+Headers:
+- Authorization: {token}
+超时时间: 5秒
+
+响应数据结构:
+```json
+{
+    "code": 200,
+    "data": {
+        "data": [
+            {
+                "ID": 1,
+                "Money": 500,
+                "Bonus": 0.1,
+                "VIPDay": 60,
+                "CreatedAt": "2026-06-18 10:00:00",
+                "Expire": "2026-08-18 10:00:00",
+                "Confirm": 1
+            }
+        ],
+        "total": 10
+    }
+}
+```
+
+【状态判断逻辑】
+---------------
+与充值记录相同：
+```python
+if item['Confirm'] == 2:
+    self.table_widget.setItem(row, 6, QTableWidgetItem('待客服确认'))
+else:
+    self.table_widget.setItem(row, 6, QTableWidgetItem('已生效'))
+```
+
+
+八、推广记录页面（PromotionRecordPage）
+=====================================
+
+【页面布局】
+-----------
+┌─────────────────────────────────────┐
+│ [刷新]                              │
+├─────────────────────────────────────┤
+│ ID | 用户 | 比例 | 充值金额 | 收入 | 时间 │
+│----|------|------|----------|------|------│
+│ 1  | xxx  | 10%  | 100      | 10   | ...  │
+├─────────────────────────────────────┤
+│ [上一页]  1/4  [下一页]             │
+└─────────────────────────────────────┘
+
+【表格列定义】
+-------------
+共6列：
+1. ID - 推广记录ID
+2. 你推广的用户 - 被邀请用户的账号
+3. 收入比例 - 分成比例（如10%）
+4. 推广用户充值金额 - 被邀请用户的充值总额
+5. 你的收入(收入比例*充值金额) - 实际获得的收益
+6. 时间 - 推广时间（ISO 8601格式转换）
+
+【按钮功能】
+-----------
+1. 刷新按钮
+   - 功能: 重新加载第一页数据
+
+【API接口】
+-----------
+URL: GET http://39.107.213.164:8090/api/user/promotion/income/list
+请求参数:
+- page: 页码
+- size: 每页数量（默认10）
+Headers:
+- Authorization: {token}
+超时时间: 5秒
+
+响应数据结构:
+```json
+{
+    "code": 200,
+    "data": {
+        "data": [
+            {
+                "id": 1,
+                "account": "user@example.com",
+                "income_rate": 0.1,
+                "invite_user_charge_money": 100,
+                "income_money": 10,
+                "created_at": "2026-06-18T10:00:00"
+            }
+        ],
+        "total": 30
+    }
+}
+```
+
+【时间格式转换】
+---------------
+```python
+from datetime import datetime
+
+# API返回的是ISO 8601格式
+iso_time = item['created_at']  # "2026-06-18T10:00:00"
+
+# 解析ISO格式
+dt = datetime.fromisoformat(iso_time)
+
+# 转换为常规格式
+formatted_time = dt.strftime("%Y-%m-%d %H:%M:%S")  # "2026-06-18 10:00:00"
+
+self.table_widget.setItem(row, 5, QTableWidgetItem(str(formatted_time)))
+```
+
+
+九、钱包页面（WalletPage）
+========================
+
+【页面布局】
+-----------
+┌─────────────────────────────────────┐
+│       您的钱包余额：                 │
+│         ¥ 123.45                    │
+│                                     │
+│ [收支明细] [提现记录] [申请提现]    │
+└─────────────────────────────────────┘
+
+【显示字段】
+-----------
+1. 钱包余额
+   - 数据来源: 构造函数传入的balance参数
+   - 显示格式: "¥ " + str(balance)
+   - 样式: 绿色字体，24号字
+
+【按钮功能】
+-----------
+1. 收支明细按钮
+   - 功能: 打开收支明细对话框
+   - 触发: IncomeDetailListDialog
+   - API: /api/user/income/detail/list
+
+2. 提现记录按钮
+   - 功能: 打开提现记录对话框
+   - 触发: WithdrawalListDialog
+   - API: /api/user/withdraw/record
+
+3. 申请提现按钮
+   - 功能: 直接申请提现（无需对话框）
+   - 条件: 余额 ≥ 10元
+   - API: POST /api/user/withdraw/apply
+
+【提现逻辑】
+-----------
+```python
+def withdraw(self):
+    # 检查余额
+    if self.balance <= 0:
+        QMessageBox.information(self, "提示", "余额不足不能提现")
+        return
+    
+    # 最低提现金额
+    if self.balance >= 10:
+        url = "http://39.107.213.164:8090/api/user/withdraw/apply"
+        response = requests.post(url, timeout=5, headers=global_headers)
+        res = response.json()
+        
+        if res.get("code") == 200:
+            QMessageBox.information(self, "提示", res.get("data"))
+        else:
+            QMessageBox.information(self, "提示", res.get("message"))
+    else:
+        QMessageBox.information(self, "提示", "提现最少10元")
+```
+
+提现规则：
+- 最低提现金额: 10元
+- 余额不足: 提示"余额不足不能提现"
+- 低于10元: 提示"提现最少10元"
+- 提现方式: 一次性提现全部余额
+
+
+十、收支明细对话框（IncomeDetailListDialog）
+==========================================
+
+【对话框布局】
+-------------
+┌─────────────────────────────────────┐
+│           收支明细                   │
+├─────────────────────────────────────┤
+│ ID | 金额 | 类型 | 时间             │
+│----|------|------|------------------│
+│ 1  | +10  | 推广 | 2026-06-18 ...  │
+│ 2  | -5   | 提现 | 2026-06-17 ...  │
+├─────────────────────────────────────┤
+│ [上一页] 第 1 页 / 共 3 页 [下一页] │
+└─────────────────────────────────────┘
+
+【表格列定义】
+-------------
+共4列：
+1. ID - 明细记录ID
+2. 金额 - 带符号的金额（+收入/-支出）
+3. 类型 - 推广收入 / 提现
+4. 时间 - 交易时间
+
+【API接口】
+-----------
+URL: GET http://39.107.213.164:8090/api/user/income/detail/list
+请求参数:
+- page: 页码
+- size: 每页数量（固定10）
+Headers:
+- Authorization: {token}
+超时时间: 5秒
+
+响应数据结构:
+```json
+{
+    "code": 200,
+    "data": {
+        "data": [
+            {
+                "Id": 1,
+                "Money": 10,
+                "Type": 1,
+                "CreatedAt": "2026-06-18 10:00:00"
+            }
+        ],
+        "total": 25
+    }
+}
+```
+
+【类型判断逻辑】
+---------------
+```python
+if record.get("Type") == 1:
+    # 收入
+    self.table.setItem(row, 1, QTableWidgetItem(f"+{record.get('Money', 0)} 元"))
+    self.table.setItem(row, 2, QTableWidgetItem("推广收入"))
+else:
+    # 支出
+    self.table.setItem(row, 1, QTableWidgetItem(f"-{record.get('Money', 0)} 元"))
+    self.table.setItem(row, 2, QTableWidgetItem("提现"))
+```
+
+类型说明：
+- Type = 1: 推广收入（显示为"+金额"）
+- Type = 2或其他: 提现（显示为"-金额"）
+
+
+十一、提现记录对话框（WithdrawalListDialog）
+==========================================
+
+【对话框布局】
+-------------
+┌─────────────────────────────────────┐
+│           提现记录                   │
+├─────────────────────────────────────┤
+│ ID | 金额 | 状态 | 提现时间         │
+│----|------|------|------------------│
+│ 1  | 50元 | 待审核 | 2026-06-18 ...│
+│ 2  | 30元 | 已提现成功 | 2026-...  │
+├─────────────────────────────────────┤
+│ [上一页] 第 1 页 / 共 2 页 [下一页] │
+└─────────────────────────────────────┘
+
+【表格列定义】
+-------------
+共4列：
+1. ID - 提现记录ID
+2. 提现金额 - 带单位的金额（XX元）
+3. 状态 - 待审核 / 已提现成功
+4. 提现时间 - 申请提现的时间
+
+【API接口】
+-----------
+URL: GET http://39.107.213.164:8090/api/user/withdraw/record
+请求参数:
+- page: 页码
+- size: 每页数量（固定10）
+Headers:
+- Authorization: {token}
+超时时间: 5秒
+
+响应数据结构:
+```json
+{
+    "code": 200,
+    "data": {
+        "data": [
+            {
+                "Id": 1,
+                "Money": 50,
+                "Status": 1,
+                "CreatedAt": "2026-06-18 10:00:00"
+            }
+        ],
+        "total": 15
+    }
+}
+```
+
+【状态判断逻辑】
+---------------
+```python
+if record.get("Status") == 1:
+    self.table.setItem(row, 2, QTableWidgetItem("待审核"))
+else:
+    self.table.setItem(row, 2, QTableWidgetItem("已提现成功"))
+```
+
+状态说明：
+- Status = 1: 待审核
+- Status = 2或其他: 已提现成功
+
+
+十二、所有API接口汇总
+====================
+
+【认证相关】
+-----------
+1. 登录
+   - URL: POST /api/login
+   - 用途: 用户登录获取token和用户信息
+
+【用户信息相关】
+---------------
+2. 上传头像
+   - URL: POST /api/user/avatar/upload
+   - 参数: file (multipart/form-data)
+   - 用途: 更换用户头像
+
+3. 检查VIP状态
+   - URL: GET /api/user/check/vip/expire
+   - 用途: 播放音乐前检查VIP是否有效
+
+【激活码相关】
+-------------
+4. 激活码激活
+   - URL: POST /api/user/activate/code
+   - 参数: {"code": "激活码"}
+   - 用途: 使用激活码延长VIP
+
+5. 查询激活记录
+   - URL: GET /api/user/code/list
+   - 参数: page, size
+   - 用途: 查看历史激活记录
+
+【充值相关】
+-----------
+6. 查询充值记录
+   - URL: GET /api/user/charge/record
+   - 参数: page, size
+   - 用途: 查看充值历史和状态
+
+【投资相关】
+-----------
+7. 查询投资记录
+   - URL: GET /api/user/invest/record
+   - 参数: page, size
+   - 用途: 查看投资历史和赠送VIP
+
+【推广相关】
+-----------
+8. 查询推广收益
+   - URL: GET /api/user/promotion/income/list
+   - 参数: page, size
+   - 用途: 查看推广收入和分成明细
+
+【钱包相关】
+-----------
+9. 申请提现
+   - URL: POST /api/user/withdraw/apply
+   - 参数: 无（全额提现）
+   - 用途: 将钱包余额提现
+
+10. 查询提现记录
+    - URL: GET /api/user/withdraw/record
+    - 参数: page, size
+    - 用途: 查看提现历史和状态
+
+11. 查询收支明细
+    - URL: GET /api/user/income/detail/list
+    - 参数: page, size
+    - 用途: 查看所有收入支出明细
+
+【通用请求规范】
+---------------
+所有需要认证的API都需要在Headers中包含：
+```
+Authorization: {token}
+```
+
+超时时间统一为5秒（timeout=5）
+
+分页参数：
+- page: 页码，从1开始
+- size: 每页数量，通常为10
+
+
+十三、数据流转图
+===============
+
+【个人中心初始化流程】
+--------------------
+```
+用户点击个人中心按钮
+  ↓
+创建UserProfile实例
+  ↓
+传入login_user对象
+  ↓
+读取QSettings获取语言设置
+  ↓
+渲染头部信息区
+  ├─ 计算试用期
+  ├─ 显示注册时间
+  ├─ 显示账号名称
+  ├─ 显示邀请人（如有）
+  └─ 加载头像
+  ↓
+创建Tab选项卡
+  └─ 添加"激活记录"Tab
+  ↓
+ActiveVipPage初始化
+  └─ 调用load_data(page=1)
+      ↓
+      调用API获取激活记录
+      ↓
+      渲染表格数据
+      ↓
+      显示分页控件
+```
+
+【头像上传流程】
+--------------
+```
+用户点击头像
+  ↓
+打开文件选择对话框
+  ↓
+用户选择图片
+  ↓
+验证文件大小和格式
+  ↓
+显示进度对话框
+  ↓
+POST /api/user/avatar/upload
+  ↓
+服务器返回新头像URL
+  ↓
+更新login_user["avatar"]
+  ↓
+保存到QSettings
+  ↓
+发送user_avatar_signal信号
+  ↓
+下载新头像图片
+  ↓
+更新头像显示
+  ↓
+提示"设置头像成功！"
+```
+
+【激活记录加载流程】
+------------------
+```
+ActiveVipPage初始化
+  ↓
+调用load_data(page=1)
+  ↓
+GET /api/user/code/list?page=1&size=10
+  ↓
+服务器返回激活记录列表
+  ↓
+计算总页数
+  ↓
+遍历每条记录
+  ├─ 判断是否过期
+  ├─ 格式化显示内容
+  └─ 添加到表格
+  ↓
+更新分页标签
+  ↓
+启用/禁用翻页按钮
+```
+
+【提现流程】
+-----------
+```
+用户点击"申请提现"
+  ↓
+检查余额
+  ├─ 余额 ≤ 0 → 提示"余额不足"
+  ├─ 余额 < 10 → 提示"最少10元"
+  └─ 余额 ≥ 10 → 继续
+  ↓
+POST /api/user/withdraw/apply
+  ↓
+服务器处理提现申请
+  ↓
+返回结果
+  ├─ 成功 → 提示成功消息
+  └─ 失败 → 提示错误消息
+  ↓
+钱包余额不变（前端不立即更新）
+```
+
+
+十四、注意事项
+==============
+
+【数据缓存】
+-----------
+1. login_user保存在QSettings中
+   - Key: "login_user"
+   - Value: JSON字符串
+   - 更新时机: 头像上传成功后
+
+2. 语言设置保存在QSettings中
+   - Key: "lang"
+   - Value: "zh-cn" / "zh-tw" / "en-us"
+   - 读取时机: 页面初始化时
+
+【网络请求】
+-----------
+1. 所有API请求都有5秒超时
+2. 使用global_headers传递token
+3. 异常处理不完善，部分页面缺少try-catch
+
+【分页逻辑】
+-----------
+1. 每页默认10条记录
+2. 总页数计算: math.ceil(total / page_size)
+3. 无数据时总页数为0
+4. 翻页时会重新调用API
+
+【状态管理】
+-----------
+1. VIP状态由服务器控制
+2. 客户端只负责显示
+3. 过期判断在客户端进行（激活记录页面）
+
+【UI更新】
+---------
+1. 头像上传使用进度对话框
+2. 表格数据每次刷新都清空重建
+3. 分页按钮根据当前页自动启用/禁用
+
+【多语言支持】
+-------------
+1. 所有文本都支持三种语言
+2. 通过QSettings读取语言设置
+3. 使用if-elif判断切换语言
+
+【安全考虑】
+-----------
+1. token存储在QSettings中（明文）
+2. 头像上传有大小和格式限制
+3. 提现有最低金额限制
+
+
+十五、常见问题
+==============
+
+Q1: 为什么有些Tab没有显示？
+A: 当前代码只添加了"激活记录"Tab，其他Tab可能需要手动添加或在其他版本中使用。
+
+Q2: 如何添加其他Tab？
+A: 在user_center.py的tab_widget中添加：
+```python
+recharge_page = RechargeRecordPage()
+tab_widget.addTab(recharge_page, "充值记录")
+
+invest_page = InvestRecordPage()
+tab_widget.addTab(invest_page, "投资记录")
+
+promotion_page = PromotionRecordPage()
+tab_widget.addTab(promotion_page, "推广记录")
+
+wallet_page = WalletPage(balance)
+tab_widget.addTab(wallet_page, "钱包")
+```
+
+Q3: 头像上传失败怎么办？
+A: 检查以下几点：
+- 文件大小是否超过1MB
+- 文件格式是否正确
+- 网络连接是否正常
+- token是否有效
+
+Q4: 为什么充值记录显示"待客服确认"？
+A: 充值需要人工审核，审核通过后状态会变为"已生效"。
+
+Q5: 推广收益如何计算？
+A: 推广收益 = 被邀请用户充值金额 × 收入比例
+
+Q6: 提现多久到账？
+A: 提现申请提交后需要审核，审核通过后才会打款。
+
+Q7: 如何知道我的VIP什么时候过期？
+A: 在"激活记录"Tab中查看最后一条记录的"过期时间"字段。
+
+Q8: 可以同时有多个VIP记录吗？
+A: 可以，每次激活都会创建新记录，VIP时长会累加。
+
+Q9: 为什么收支明细中有负数？
+A: 负数表示支出（提现），正数表示收入（推广收益）。
+
+Q10: 如何修改邀请码？
+A: 邀请码在注册时生成，之后不能修改。
+
+
+十六、总结
+==========
+
+个人中心是MagicPiano应用的核心用户管理模块，提供了完整的账户信息管理、VIP激活、充值投资、推广收益和钱包提现等功能。
+
+【核心特点】
+-----------
+✅ 模块化设计 - 每个功能独立成页
+✅ 多语言支持 - 简中/繁中/英文
+✅ 分页加载 - 提高大数据量性能
+✅ 实时验证 - 试用期和VIP状态实时检查
+✅ 用户友好 - 清晰的提示和状态显示
+
+【技术栈】
+---------
+- PyQt6 - UI框架
+- requests - HTTP请求
+- QSettings - 本地存储
+- datetime - 时间处理
+- math - 分页计算
+
+【改进建议】
+-----------
+1. 完善异常处理机制
+2. 添加数据缓存减少API调用
+3. 优化头像上传体验（压缩、裁剪）
+4. 添加更多Tab到主界面
+5. 实现余额实时更新
+6. 添加搜索和筛选功能
+7. 优化分页性能（虚拟滚动）
+
+
+文档结束

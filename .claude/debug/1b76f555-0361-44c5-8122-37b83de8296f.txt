@@ -1,0 +1,191 @@
+2026-07-01T14:29:40.875Z [DEBUG] MDM settings load completed in 37ms
+2026-07-01T14:29:40.938Z [DEBUG] Broken symlink or missing file encountered for settings.json at path: C:\Program Files\ClaudeCode\managed-settings.json
+2026-07-01T14:29:40.944Z [DEBUG] Broken symlink or missing file encountered for settings.json at path: E:\PythonProject\AutoPlayer_android\magicpinao\.claude\settings.json
+2026-07-01T14:29:40.950Z [DEBUG] Broken symlink or missing file encountered for settings.json at path: E:\PythonProject\AutoPlayer_android\magicpinao\.claude\settings.local.json
+2026-07-01T14:29:40.951Z [DEBUG] CA certs: Config fallback - globalEnv keys: , settingsEnv keys: none
+2026-07-01T14:29:40.965Z [DEBUG] [init] configureGlobalMTLS starting
+2026-07-01T14:29:40.966Z [DEBUG] [init] configureGlobalMTLS complete
+2026-07-01T14:29:40.967Z [DEBUG] [init] configureGlobalAgents starting
+2026-07-01T14:29:40.967Z [DEBUG] CA certs: stores=bundled,system, extraCertsPath=undefined
+2026-07-01T14:29:40.970Z [DEBUG] CA certs: Loaded 120 bundled root certificates
+2026-07-01T14:29:41.026Z [DEBUG] CA certs: Loaded 196 system CA certificates
+2026-07-01T14:29:41.026Z [DEBUG] mTLS: Creating HTTPS agent with custom certificates
+2026-07-01T14:29:41.028Z [DEBUG] [init] configureGlobalAgents complete
+2026-07-01T14:29:41.036Z [DEBUG] Using bash path: "C:\Program Files\Git\bin\bash.exe"
+2026-07-01T14:29:41.042Z [DEBUG] Error log sink initialized
+2026-07-01T14:29:41.085Z [DEBUG] Applying permission update: Adding 35 allow rule(s) to destination 'userSettings': ["Bash(python -c ' *)","Bash(cmd.exe //c \"taskkill /PID 28808 /F\")","Bash(cat /c/temp/claude/e--free-video-downloader-backend/ba34788d-c84d-4b5f-9eb8-e711eef45a2b/tasks/bzfsz9azw.output 2>/dev/null | tail -10)","Read(//c/temp/claude/e--free-video-downloader-backend/ba34788d-c84d-4b5f-9eb8-e711eef45a2b/tasks/**)","Bash(winget install *)","Bash(reg query *)","Bash(grep -i \"install\\\\|path\\\\|\\\\\\\\\")","Bash(dir /s /b \"C:\\\\Program Files*\\\\VideoLAN\\\\VLC\\\\libvlc.dll\")","Bash(dir /s /b \"D:\\\\Program Files*\\\\VideoLAN\\\\VLC\\\\libvlc.dll\")","Bash(dir /s /b \"E:\\\\Program Files*\\\\VideoLAN\\\\VLC\\\\libvlc.dll\")","Bash(where vlc *)","Bash(cmd //c \"dir /s /b C:\\\\*libvlc.dll 2>nul\")","Bash(cmd //c \"dir /s /b D:\\\\*libvlc.dll 2>nul\")","Bash(cmd //c \"dir /s /b E:\\\\*libvlc.dll 2>nul\")","Bash(where java *)","Read(//c/Program Files/**)","Read(//c/Program Files \\(x86\\)/**)","Read(//c/Program Files/Java/**)","Bash(\"C:/Program Files \\(x86\\)/Android/android-sdk/platform-tools/adb.exe\" devices)","Bash(\"C:/Program Files \\(x86\\)/Android/android-sdk/platform-tools/adb.exe\" -s emulator-5554 wait-for-device)","Bash(\"C:/Program Files \\(x86\\)/Android/android-sdk/platform-tools/adb.exe\" -s emulator-5554 install -r \"e:/PythonProject/AutoPlayer_android/magicpinao/app/build/outputs/apk/debug/app-debug.apk\")","Bash(\"C:/Program Files \\(x86\\)/Android/android-sdk/platform-tools/adb.exe\" -s emulator-5554 shell am start -n com.example.magicpinao/.MainActivity)","Bash(\"C:/Program Files \\(x86\\)/Android/android-sdk/platform-tools/adb.exe\" -s emulator-5554 exec-out screencap -p)","Bash(\"C:/Program Files \\(x86\\)/Android/android-sdk/platform-tools/adb.exe\" -s emulator-5554 logcat -d -t 20)","Bash(\"C:/Program Files \\(x86\\)/Android/android-sdk/platform-tools/adb.exe\" -s emulator-5554 logcat -d -t 10)","Bash(\"C:/Program Files \\(x86\\)/Android/android-sdk/platform-tools/adb.exe\" -s emulator-5554 shell dumpsys window windows)","Bash(\"C:/Program Files \\(x86\\)/Android/android-sdk/platform-tools/adb.exe\" -s emulator-5554 shell \"dumpsys activity activities | grep -E 'mResumedActivity|topResumedActivity'\")","Bash(\"C:/Program Files \\(x86\\)/Android/android-sdk/platform-tools/adb.exe\" -s emulator-5554 logcat -c)","Bash(\"C:/Program Files \\(x86\\)/Android/android-sdk/platform-tools/adb.exe\" -s emulator-5554 logcat -d -t 30)","Bash(\"C:/Program Files \\(x86\\)/Android/android-sdk/platform-tools/adb.exe\" -s emulator-5554 shell \"ping -c 2 8.8.8.8\")","Bash(\"C:/Program Files \\(x86\\)/Android/android-sdk/platform-tools/adb.exe\" -s emulator-5554 shell \"echo | timeout 5 nc -w 3 smtp.qq.com 465 2>&1 || echo 'Connection timed out or failed'\")","Bash(\"C:/Program Files \\(x86\\)/Android/android-sdk/platform-tools/adb.exe\" -s emulator-5554 shell am force-stop com.example.magicpinao)","Bash(\"C:/Program Files \\(x86\\)/Android/android-sdk/platform-tools/adb.exe\" -s emulator-5554 shell \"dumpsys activity activities | grep topResumedActivity\")","Bash(\"C:/Program Files \\(x86\\)/Android/android-sdk/platform-tools/adb.exe\" -s emulator-5554 logcat -d -s \"AndroidRuntime:E\" -t 10)","Bash(\"C:/Program Files \\(x86\\)/Android/android-sdk/platform-tools/adb.exe\" -s emulator-5554 logcat -d -s \"AndroidRuntime:E\" -t 5)"]
+2026-07-01T14:29:41.087Z [DEBUG] [ToolSearch:optimistic] disabled: ANTHROPIC_BASE_URL=https://api.openai-proxy.org/anthropic is not a first-party Anthropic host. Set ENABLE_TOOL_SEARCH=true (or auto / auto:N) if your proxy forwards tool_reference blocks.
+2026-07-01T14:29:41.186Z [DEBUG] installed_plugins.json doesn't exist, returning empty V2 object
+2026-07-01T14:29:41.190Z [DEBUG] Applying permission update: Adding 1 directory with destination 'localSettings': ["e:\\free-video-downloader\\magicvideo"]
+2026-07-01T14:29:41.192Z [DEBUG] [STARTUP] Loading MCP configs...
+2026-07-01T14:29:41.196Z [DEBUG] [STARTUP] Running setup()...
+2026-07-01T14:29:41.203Z [DEBUG] Loading skills from: managed=C:\Program Files\ClaudeCode\.claude\skills, user=C:\Users\Administrator\.claude\skills, project=[]
+2026-07-01T14:29:41.210Z [DEBUG] Broken symlink or missing file encountered for settings.json at path: C:\Program Files\ClaudeCode\managed-settings.json
+2026-07-01T14:29:41.226Z [DEBUG] Broken symlink or missing file encountered for settings.json at path: E:\PythonProject\AutoPlayer_android\magicpinao\.claude\settings.json
+2026-07-01T14:29:41.236Z [DEBUG] Broken symlink or missing file encountered for settings.json at path: E:\PythonProject\AutoPlayer_android\magicpinao\.claude\settings.local.json
+2026-07-01T14:29:41.237Z [DEBUG] Error log sink initialized
+2026-07-01T14:29:41.242Z [DEBUG] Failed to stat directory C:\Program Files\ClaudeCode\.claude\commands: ENOENT: no such file or directory, stat 'C:\Program Files\ClaudeCode\.claude\commands'
+2026-07-01T14:29:41.246Z [DEBUG] Failed to stat directory C:\Users\Administrator\.claude\commands: ENOENT: no such file or directory, stat 'C:\Users\Administrator\.claude\commands'
+2026-07-01T14:29:41.249Z [DEBUG] Loaded 0 unique skills (0 unconditional, 0 conditional, managed: 0, user: 0, project: 0, additional: 0, legacy commands: 0)
+2026-07-01T14:29:41.255Z [DEBUG] Failed to stat directory C:\Program Files\ClaudeCode\.claude\agents: ENOENT: no such file or directory, stat 'C:\Program Files\ClaudeCode\.claude\agents'
+2026-07-01T14:29:41.255Z [DEBUG] Failed to stat directory C:\Users\Administrator\.claude\agents: ENOENT: no such file or directory, stat 'C:\Users\Administrator\.claude\agents'
+2026-07-01T14:29:41.276Z [DEBUG] [STARTUP] setup() completed in 78ms
+2026-07-01T14:29:41.279Z [DEBUG] [STARTUP] Loading commands and agents...
+2026-07-01T14:29:41.285Z [DEBUG] Git remote URL: null
+2026-07-01T14:29:41.286Z [DEBUG] No git remote URL found
+2026-07-01T14:29:41.295Z [DEBUG] Found 0 plugins (0 enabled, 0 disabled)
+2026-07-01T14:29:41.297Z [DEBUG] getPluginSkills: Processing 0 enabled plugins
+2026-07-01T14:29:41.298Z [DEBUG] Total plugin workflows loaded: 0
+2026-07-01T14:29:41.299Z [DEBUG] Registered 0 hooks from 0 plugins
+2026-07-01T14:29:41.301Z [DEBUG] Total plugin commands loaded: 0
+2026-07-01T14:29:41.301Z [DEBUG] Total plugin agents loaded: 0
+2026-07-01T14:29:41.304Z [DEBUG] Total plugin skills loaded: 0 (0 duplicate/user-owned entries skipped)
+2026-07-01T14:29:41.305Z [DEBUG] getSkills returning: 0 skill dir commands, 0 plugin skills, 20 bundled skills, 0 builtin plugin skills
+2026-07-01T14:29:41.312Z [DEBUG] [STARTUP] Commands and agents loaded in 33ms
+2026-07-01T14:29:41.318Z [DEBUG] [STARTUP] Running showSetupScreens()...
+2026-07-01T14:29:41.373Z [DEBUG] Cleared CA certificates cache
+2026-07-01T14:29:41.374Z [DEBUG] Cleared mTLS configuration cache
+2026-07-01T14:29:41.374Z [DEBUG] Cleared proxy agent cache
+2026-07-01T14:29:41.375Z [DEBUG] CA certs: stores=bundled,system, extraCertsPath=undefined
+2026-07-01T14:29:41.375Z [DEBUG] CA certs: Loaded 120 bundled root certificates
+2026-07-01T14:29:41.376Z [DEBUG] CA certs: Loaded 196 system CA certificates
+2026-07-01T14:29:41.376Z [DEBUG] mTLS: Creating HTTPS agent with custom certificates
+2026-07-01T14:29:41.385Z [DEBUG] [STARTUP] showSetupScreens() completed in 65ms
+2026-07-01T14:29:41.386Z [DEBUG] [LSP MANAGER] initializeLspServerManager() called
+2026-07-01T14:29:41.387Z [DEBUG] [LSP MANAGER] Created manager instance, state=pending
+2026-07-01T14:29:41.387Z [DEBUG] [LSP MANAGER] Starting async initialization (generation 1)
+2026-07-01T14:29:41.388Z [DEBUG] Starting background startup prefetches
+2026-07-01T14:29:41.389Z [DEBUG] [Bootstrap] Fetching
+2026-07-01T14:29:41.430Z [DEBUG] [STARTUP] MCP configs resolved in 109ms (awaited at +237ms)
+2026-07-01T14:29:41.439Z [DEBUG] Fast mode unavailable: Fast mode is currently unavailable
+2026-07-01T14:29:41.439Z [DEBUG] [Reconnection] computeInitialTeamContext: No teammate context set (not a teammate)
+2026-07-01T14:29:41.451Z [DEBUG] Preserving file permissions: 100666
+2026-07-01T14:29:41.452Z [DEBUG] Writing to temp file: C:\Users\Administrator\.claude.json.tmp.4872.d850c7ea540e
+2026-07-01T14:29:41.453Z [DEBUG] Applied original permissions to temp file
+2026-07-01T14:29:41.455Z [DEBUG] Temp file written successfully, size: 7214 bytes
+2026-07-01T14:29:41.456Z [DEBUG] Renaming C:\Users\Administrator\.claude.json.tmp.4872.d850c7ea540e to C:\Users\Administrator\.claude.json
+2026-07-01T14:29:41.457Z [DEBUG] File C:\Users\Administrator\.claude.json written atomically
+2026-07-01T14:29:41.458Z [DEBUG] Total LSP servers loaded: 0
+2026-07-01T14:29:41.459Z [DEBUG] Initialized versioned plugins system with 0 plugins
+2026-07-01T14:29:41.460Z [DEBUG] [LSP SERVER MANAGER] getAllLspServers returned 0 server(s)
+2026-07-01T14:29:41.460Z [DEBUG] LSP manager initialized with 0 servers
+2026-07-01T14:29:41.462Z [DEBUG] LSP server manager initialized successfully
+2026-07-01T14:29:41.462Z [DEBUG] LSP notification handlers registered successfully for all 0 server(s)
+2026-07-01T14:29:41.660Z [DEBUG] [keybindings] KeybindingSetup initialized with 174 bindings, 0 warnings
+2026-07-01T14:29:41.704Z [DEBUG] Fast mode unavailable: Fast mode is currently unavailable
+2026-07-01T14:29:41.747Z [DEBUG] [claudeai-mcp] Disabled: API-key auth precedence active
+2026-07-01T14:29:41.750Z [DEBUG] [keybindings] Skipping file watcher - user customization disabled
+2026-07-01T14:29:41.750Z [DEBUG] [REPL:mount] REPL mounted, disabled=false
+2026-07-01T14:29:41.752Z [DEBUG] Official marketplace auto-install skipped: already_installed
+2026-07-01T14:29:41.755Z [DEBUG] performStartupChecks called
+2026-07-01T14:29:41.756Z [DEBUG] Starting background plugin installations
+2026-07-01T14:29:41.757Z [DEBUG] [jobStateNameSync] watch skipped: Error: ENOENT: no such file or directory, watch 'C:\Users\Administrator\.claude\jobs\1b76f555'
+2026-07-01T14:29:41.765Z [DEBUG] Preserving file permissions: 100666
+2026-07-01T14:29:41.765Z [DEBUG] Writing to temp file: C:\Users\Administrator\.claude.json.tmp.4872.69d5b99d8a63
+2026-07-01T14:29:41.767Z [DEBUG] Applied original permissions to temp file
+2026-07-01T14:29:41.769Z [DEBUG] Temp file written successfully, size: 7215 bytes
+2026-07-01T14:29:41.770Z [DEBUG] Renaming C:\Users\Administrator\.claude.json.tmp.4872.69d5b99d8a63 to C:\Users\Administrator\.claude.json
+2026-07-01T14:29:41.772Z [DEBUG] File C:\Users\Administrator\.claude.json written atomically
+2026-07-01T14:29:41.774Z [DEBUG] [ScheduledTasks] scheduler start() — enabled=false, hasTasks=false
+2026-07-01T14:29:41.792Z [DEBUG] Fast mode unavailable: Fast mode is currently unavailable
+2026-07-01T14:29:41.910Z [DEBUG] High write ratio: blit=0, write=1281 (100.0% writes), screen=21x120
+2026-07-01T14:29:41.937Z [DEBUG] AutoUpdaterWrapper: Installation type: npm-global
+2026-07-01T14:29:41.938Z [DEBUG] performBackgroundPluginInstallations called
+2026-07-01T14:29:41.956Z [DEBUG] Failed to stat directory C:\Program Files\ClaudeCode\.claude\skills: ENOENT: no such file or directory, stat 'C:\Program Files\ClaudeCode\.claude\skills'
+2026-07-01T14:29:41.956Z [DEBUG] Failed to stat directory C:\Users\Administrator\.claude\skills: ENOENT: no such file or directory, stat 'C:\Users\Administrator\.claude\skills'
+2026-07-01T14:29:42.445Z [DEBUG] [auto-mode] verifyAutoModeGateAccess: enabledState=opt-in disabledBySettings=false model=anthropic/claude-sonnet-4.6 modelSupported=false disableFastModeBreakerFires=false carouselAvailable=false canEnterAuto=false
+2026-07-01T14:29:42.446Z [WARN] auto mode disabled: model anthropic/claude-sonnet-4.6 does not support auto mode
+2026-07-01T14:29:42.447Z [DEBUG] [auto-mode] kickOutOfAutoIfNeeded applying: ctx.mode=default ctx.prePlanMode=undefined reason=model
+2026-07-01T14:29:42.505Z [DEBUG] Loaded plugins - Enabled: 0, Disabled: 0, Commands: 0, Agents: 0, Errors: 0
+2026-07-01T14:29:42.519Z [DEBUG] [Perfetto] initializePerfettoTracing called, env value: undefined
+2026-07-01T14:29:42.521Z [DEBUG] [3P telemetry] isTelemetryEnabled=false (CLAUDE_CODE_ENABLE_TELEMETRY=undefined)
+2026-07-01T14:29:42.601Z [DEBUG] Fast mode unavailable: Fast mode is currently unavailable
+2026-07-01T14:29:42.892Z [DEBUG] [FileIndex] getProjectFiles called, respectGitignore=true
+2026-07-01T14:29:42.893Z [DEBUG] [FileIndex] getFilesUsingGit called
+2026-07-01T14:29:42.894Z [DEBUG] [FileIndex] not a git repo, returning null
+2026-07-01T14:29:42.898Z [DEBUG] [FileIndex] git ls-files returned null, falling back to ripgrep
+2026-07-01T14:29:42.974Z [DEBUG] Git remote URL: null
+2026-07-01T14:29:42.975Z [DEBUG] No git remote URL found
+2026-07-01T14:29:42.976Z [DEBUG] Not in a GitHub repository, skipping path mapping update
+2026-07-01T14:29:43.031Z [DEBUG] XTVERSION: no reply (terminal ignored query)
+2026-07-01T14:29:43.036Z [DEBUG] DECRQM(2026): skipped (no XTVERSION reply) → sync unsupported
+2026-07-01T14:29:43.041Z [DEBUG] DECSTBM: gated (TMUX=unset ZELLIJ=unset TERM_PROGRAM=unset TERM=unset)
+2026-07-01T14:29:43.049Z [DEBUG] Ripgrep first use test: PASSED (mode=embedded, path=C:\Users\Administrator\AppData\Roaming\npm\node_modules\@anthropic-ai\claude-code\bin\claude.exe)
+2026-07-01T14:29:43.053Z [DEBUG] rg error (signal=undefined, code=2, stderr: rg: C:\Users\Administrator\.claude\plugins\cache: IO error for operation on C:\Users\Administrator\.claude\plugins\cache: 系统找不到指定的文件。 (os error 2)
+), 0 results
+2026-07-01T14:29:43.081Z [DEBUG] Failed to stat directory C:\Program Files\ClaudeCode\.claude\workflows: ENOENT: no such file or directory, stat 'C:\Program Files\ClaudeCode\.claude\workflows'
+2026-07-01T14:29:43.083Z [DEBUG] Failed to stat directory C:\Program Files\ClaudeCode\.claude\output-styles: ENOENT: no such file or directory, stat 'C:\Program Files\ClaudeCode\.claude\output-styles'
+2026-07-01T14:29:43.087Z [DEBUG] Failed to stat directory C:\Program Files\ClaudeCode\.claude\routines: ENOENT: no such file or directory, stat 'C:\Program Files\ClaudeCode\.claude\routines'
+2026-07-01T14:29:43.090Z [DEBUG] Failed to stat directory C:\Users\Administrator\.claude\workflows: ENOENT: no such file or directory, stat 'C:\Users\Administrator\.claude\workflows'
+2026-07-01T14:29:43.095Z [DEBUG] Failed to stat directory C:\Users\Administrator\.claude\output-styles: ENOENT: no such file or directory, stat 'C:\Users\Administrator\.claude\output-styles'
+2026-07-01T14:29:43.173Z [DEBUG] Failed to stat directory C:\Users\Administrator\.claude\routines: ENOENT: no such file or directory, stat 'C:\Users\Administrator\.claude\routines'
+2026-07-01T14:29:43.191Z [DEBUG] Watching for changes in setting files C:\Users\Administrator\.claude\settings.json...
+2026-07-01T14:29:43.529Z [DEBUG] No CLAUDE.md/rules files found
+2026-07-01T14:29:43.619Z [DEBUG] [FileIndex] ripgrep: 2537 files in 721ms
+2026-07-01T14:29:43.669Z [DEBUG] [FileIndex] cache refresh completed in 777ms
+2026-07-01T14:29:44.048Z [DEBUG] [Bootstrap] Fetch failed: 403
+2026-07-01T14:29:44.049Z [ERROR] [Bootstrap] fetchBootstrapData failed: AxiosError: Request failed with status code 403
+2026-07-01T14:29:44.054Z [ERROR] Failed to fetch org fast mode status, defaulting to disabled (network_error): AxiosError: Request failed with status code 403
+2026-07-01T14:29:44.055Z [DEBUG] [mcp-registry] Loaded 0 official MCP URLs (legacy)
+2026-07-01T14:29:52.315Z [ERROR] 1P event logging: 67 events failed to export (status=403, code=ERR_BAD_REQUEST, Request failed with status code 403)
+2026-07-01T14:29:52.316Z [ERROR] [3P telemetry] OTEL diag error: {"message":"Failed to export 67 events (status=403, code=ERR_BAD_REQUEST, Request failed with status code 403)","originalLine":"490","originalColumn":"1756","line":"490","column":"1756","sourceURL":"B:/~BUN/root/src/entrypoints/cli.js","stack":"Error: Failed to export 67 events (status=403, code=ERR_BAD_REQUEST, Request failed with status code 403)\n    at doExport (B:/~BUN/root/src/entrypoints/cli.js:490:1756)\n    at processTicksAndRejections (native:7:39)","name":"Error"}
+2026-07-01T14:30:01.367Z [DEBUG] Fast mode unavailable: Fast mode unavailable due to network connectivity issues
+2026-07-01T14:30:01.378Z [DEBUG] Fast mode unavailable: Fast mode unavailable due to network connectivity issues
+2026-07-01T14:30:01.444Z [DEBUG] Fast mode unavailable: Fast mode unavailable due to network connectivity issues
+2026-07-01T14:30:03.508Z [DEBUG] Fast mode unavailable: Fast mode unavailable due to network connectivity issues
+2026-07-01T14:30:03.549Z [DEBUG] Fast mode unavailable: Fast mode unavailable due to network connectivity issues
+2026-07-01T14:30:03.801Z [DEBUG] Fast mode unavailable: Fast mode unavailable due to network connectivity issues
+2026-07-01T14:30:03.816Z [DEBUG] Fast mode unavailable: Fast mode unavailable due to network connectivity issues
+2026-07-01T14:30:03.900Z [DEBUG] Fast mode unavailable: Fast mode unavailable due to network connectivity issues
+2026-07-01T14:30:03.908Z [DEBUG] Fast mode unavailable: Fast mode unavailable due to network connectivity issues
+2026-07-01T14:30:04.010Z [DEBUG] Fast mode unavailable: Fast mode unavailable due to network connectivity issues
+2026-07-01T14:30:04.027Z [DEBUG] Fast mode unavailable: Fast mode unavailable due to network connectivity issues
+2026-07-01T14:30:04.184Z [DEBUG] Fast mode unavailable: Fast mode unavailable due to network connectivity issues
+2026-07-01T14:30:04.199Z [DEBUG] Fast mode unavailable: Fast mode unavailable due to network connectivity issues
+2026-07-01T14:30:04.339Z [DEBUG] Fast mode unavailable: Fast mode unavailable due to network connectivity issues
+2026-07-01T14:30:04.353Z [DEBUG] Fast mode unavailable: Fast mode unavailable due to network connectivity issues
+2026-07-01T14:30:04.653Z [WARN] [3P telemetry] Event dropped (no event logger initialized): user_prompt
+2026-07-01T14:30:04.686Z [DEBUG] High write ratio: blit=0, write=1525 (100.0% writes), screen=33x120
+2026-07-01T14:30:05.214Z [DEBUG] Registered claude-cli:// protocol handler in Windows registry
+2026-07-01T14:30:05.215Z [DEBUG] Auto-registered claude-cli:// deep link protocol handler
+2026-07-01T14:30:14.956Z [ERROR] 1P event logging: 4 events failed to export (status=403, code=ERR_BAD_REQUEST, Request failed with status code 403)
+2026-07-01T14:30:14.956Z [ERROR] [3P telemetry] OTEL diag error: {"message":"Failed to export 4 events (status=403, code=ERR_BAD_REQUEST, Request failed with status code 403)","originalLine":"490","originalColumn":"1756","line":"490","column":"1756","sourceURL":"B:/~BUN/root/src/entrypoints/cli.js","stack":"Error: Failed to export 4 events (status=403, code=ERR_BAD_REQUEST, Request failed with status code 403)\n    at doExport (B:/~BUN/root/src/entrypoints/cli.js:490:1756)\n    at processTicksAndRejections (native:7:39)","name":"Error"}
+2026-07-01T14:31:44.693Z [DEBUG] Fast mode unavailable: Fast mode unavailable due to network connectivity issues
+2026-07-01T14:31:44.708Z [DEBUG] High write ratio: blit=0, write=1246 (100.0% writes), screen=23x120
+2026-07-01T14:31:44.708Z [DEBUG] Full reset (shrink->below): prevHeight=33, nextHeight=23, viewport=30
+2026-07-01T14:31:44.724Z [DEBUG] AutoUpdaterWrapper: Installation type: npm-global
+2026-07-01T14:31:44.736Z [DEBUG] [FileIndex] getProjectFiles called, respectGitignore=true
+2026-07-01T14:31:44.737Z [DEBUG] [FileIndex] getFilesUsingGit called
+2026-07-01T14:31:44.737Z [DEBUG] [FileIndex] not a git repo, returning null
+2026-07-01T14:31:44.738Z [DEBUG] [FileIndex] git ls-files returned null, falling back to ripgrep
+2026-07-01T14:31:44.808Z [DEBUG] Fast mode unavailable: Fast mode unavailable due to network connectivity issues
+2026-07-01T14:31:44.821Z [DEBUG] auto-update check throttled (last check 122s ago)
+2026-07-01T14:31:44.834Z [DEBUG] Preserving file permissions: 100666
+2026-07-01T14:31:44.835Z [DEBUG] Writing to temp file: C:\Users\Administrator\.claude.json.tmp.4872.8755dde4db25
+2026-07-01T14:31:44.837Z [DEBUG] Applied original permissions to temp file
+2026-07-01T14:31:44.839Z [DEBUG] Temp file written successfully, size: 7240 bytes
+2026-07-01T14:31:44.839Z [DEBUG] Renaming C:\Users\Administrator\.claude.json.tmp.4872.8755dde4db25 to C:\Users\Administrator\.claude.json
+2026-07-01T14:31:44.842Z [DEBUG] File C:\Users\Administrator\.claude.json written atomically
+2026-07-01T14:31:45.239Z [DEBUG] [FileIndex] ripgrep: 2537 files in 501ms
+2026-07-01T14:31:45.248Z [DEBUG] [FileIndex] cache refresh completed in 512ms
+2026-07-01T14:31:45.920Z [DEBUG] Fast mode unavailable: Fast mode unavailable due to network connectivity issues
+2026-07-01T14:31:46.669Z [DEBUG] LSP server manager shut down successfully
+2026-07-01T14:31:46.672Z [DEBUG] Metrics export disabled by organization setting
+2026-07-01T14:31:46.673Z [DEBUG] BigQuery metrics exporter flush complete
+2026-07-01T14:31:46.673Z [DEBUG] BigQuery metrics exporter flush complete
+2026-07-01T14:31:46.674Z [DEBUG] BigQuery metrics exporter shutdown complete
+2026-07-01T14:31:46.973Z [ERROR] 1P event logging: 12 events failed to export (status=403, code=ERR_BAD_REQUEST, Request failed with status code 403)
+2026-07-01T14:31:46.974Z [ERROR] [3P telemetry] OTEL diag error: {"message":"Failed to export 12 events (status=403, code=ERR_BAD_REQUEST, Request failed with status code 403)","originalLine":"490","originalColumn":"1756","line":"490","column":"1756","sourceURL":"B:/~BUN/root/src/entrypoints/cli.js","stack":"Error: Failed to export 12 events (status=403, code=ERR_BAD_REQUEST, Request failed with status code 403)\n    at doExport (B:/~BUN/root/src/entrypoints/cli.js:490:1756)\n    at processTicksAndRejections (native:7:39)","name":"Error"}
+2026-07-01T14:31:46.974Z [WARN] [stderr] [?25h
+2026-07-01T14:31:46.982Z [DEBUG] Preserving file permissions: 100666
+2026-07-01T14:31:46.983Z [DEBUG] Writing to temp file: C:\Users\Administrator\.claude.json.tmp.4872.9ade221d4304
+2026-07-01T14:31:46.987Z [DEBUG] Applied original permissions to temp file
+2026-07-01T14:31:46.991Z [DEBUG] Temp file written successfully, size: 7239 bytes
+2026-07-01T14:31:46.991Z [DEBUG] Renaming C:\Users\Administrator\.claude.json.tmp.4872.9ade221d4304 to C:\Users\Administrator\.claude.json
+2026-07-01T14:31:46.993Z [DEBUG] File C:\Users\Administrator\.claude.json written atomically
+2026-07-01T14:31:47.001Z [DEBUG] Preserving file permissions: 100666
+2026-07-01T14:31:47.001Z [DEBUG] Writing to temp file: C:\Users\Administrator\.claude.json.tmp.4872.f18864a51424
+2026-07-01T14:31:47.003Z [DEBUG] Applied original permissions to temp file
+2026-07-01T14:31:47.005Z [DEBUG] Temp file written successfully, size: 7240 bytes
+2026-07-01T14:31:47.005Z [DEBUG] Renaming C:\Users\Administrator\.claude.json.tmp.4872.f18864a51424 to C:\Users\Administrator\.claude.json
+2026-07-01T14:31:47.006Z [DEBUG] File C:\Users\Administrator\.claude.json written atomically

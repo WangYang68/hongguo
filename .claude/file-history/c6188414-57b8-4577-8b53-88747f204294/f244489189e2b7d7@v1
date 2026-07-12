@@ -1,0 +1,413 @@
+package com.example.magicpinao.core.accessibility
+
+import android.app.NotificationChannel
+import android.app.NotificationManager
+import android.app.Service
+import android.content.Context
+import android.content.Intent
+import android.graphics.Color
+import android.graphics.PixelFormat
+import android.os.Build
+import android.os.Handler
+import android.os.IBinder
+import android.os.Looper
+import android.provider.Settings
+import android.util.Log
+import android.view.Gravity
+import android.view.LayoutInflater
+import android.view.View
+import android.view.WindowManager
+import android.widget.LinearLayout
+import android.widget.TextView
+import android.widget.Toast
+import androidx.core.app.NotificationCompat
+import com.example.magicpinao.R
+import com.example.magicpinao.core.coordinate.CoordinateManager
+import com.example.magicpinao.core.data.CoordinateEntity
+import com.example.magicpinao.core.data.PianoKeyCoordinate
+import com.example.magicpinao.core.data.CoordinateRepository
+import com.google.gson.Gson
+import kotlinx.coroutines.*
+
+/**
+ * 悬浮窗坐标标定服务
+ *
+ * 触摸覆盖层标定法（适用于Unity/游戏类钢琴应用）：
+ * 1. 用户打开目标钢琴应用
+ * 2. 点击「标定左边界」→ 半透明覆盖层出现
+ * 3. 用户在覆盖层上点击最左边琴键的位置 → 记录坐标
+ * 4. 点击「标定右边界」→ 再次出现覆盖层
+ * 5. 用户在覆盖层上点击最右边琴键的位置 → 记录坐标
+ * 6. 系统自动计算中间所有琴键 → 保存
+ */
+class FloatingCalibrationService : Service() {
+
+    companion object {
+        private const val TAG = "FloatingCalibration"
+        private const val NOTIFICATION_ID = 1001
+        private const val CHANNEL_ID = "calibration_channel"
+
+        const val ACTION_START_CALIBRATION = "ACTION_START_CALIBRATION"
+        const val ACTION_STOP_CALIBRATION = "ACTION_STOP_CALIBRATION"
+        const val EXTRA_PACKAGE_NAME = "EXTRA_PACKAGE_NAME"
+        const val EXTRA_KEY_COUNT = "EXTRA_KEY_COUNT"
+
+        var instance: FloatingCalibrationService? = null
+            private set
+
+        fun start(context: Context, packageName: String, keyCount: Int = 21) {
+            val intent = Intent(context, FloatingCalibrationService::class.java).apply {
+                action = ACTION_START_CALIBRATION
+                putExtra(EXTRA_PACKAGE_NAME, packageName)
+                putExtra(EXTRA_KEY_COUNT, keyCount)
+            }
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+                context.startForegroundService(intent)
+            } else {
+                context.startService(intent)
+            }
+        }
+
+        fun stop(context: Context) {
+            val intent = Intent(context, FloatingCalibrationService::class.java).apply {
+                action = ACTION_STOP_CALIBRATION
+            }
+            context.startService(intent)
+        }
+    }
+
+    private var windowManager: WindowManager? = null
+    private var floatingView: View? = null
+    private var layoutParams: WindowManager.LayoutParams? = null
+    private var touchOverlay: View? = null
+    private var overlayParams: WindowManager.LayoutParams? = null
+
+    private val coordinateManager = CoordinateManager()
+    private val scope = CoroutineScope(Dispatchers.Main + SupervisorJob())
+    private val handler = Handler(Looper.getMainLooper())
+
+    private val calibrationPoints = mutableListOf<Pair<Int, Int>>()
+    private var totalKeys = 21
+    private var currentAppPackage = ""
+    private var keyRowCount = 1
+
+    private var tvStep: TextView? = null
+    private var tvProgressBadge: TextView? = null
+    private var calibrateBtn: LinearLayout? = null
+
+    // 当前标定哪个点: 0=左边界, 1=右边界
+    private var currentTarget = 0
+
+    // 拖动
+    private var dragStartX = 0
+    private var dragStartY = 0
+    private var dragStartTouchX = 0f
+    private var dragStartTouchY = 0f
+
+    override fun onCreate() {
+        super.onCreate()
+        instance = this
+    }
+
+    override fun onBind(intent: Intent?): IBinder? = null
+
+    override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
+        when (intent?.action) {
+            ACTION_START_CALIBRATION -> {
+                currentAppPackage = intent.getStringExtra(EXTRA_PACKAGE_NAME) ?: ""
+                totalKeys = intent.getIntExtra(EXTRA_KEY_COUNT, 21)
+                // 从目标应用配置中获取键盘排数
+                val app = SupportedApps.findByPackage(currentAppPackage)
+                keyRowCount = app?.rowCount ?: if (totalKeys == 21) 3 else 1
+                startForegroundNotification()
+                startCalibration()
+            }
+            ACTION_STOP_CALIBRATION -> {
+                stopCalibration()
+                stopSelf()
+            }
+        }
+        return START_NOT_STICKY
+    }
+
+    override fun onDestroy() {
+        super.onDestroy()
+        stopCalibration()
+        windowManager?.let { wm ->
+            try { floatingView?.let { wm.removeView(it) } } catch (_: Exception) {}
+            try { touchOverlay?.let { wm.removeView(it) } } catch (_: Exception) {}
+        }
+        instance = null
+        scope.cancel()
+    }
+
+    private fun startForegroundNotification() {
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+            val channel = NotificationChannel(CHANNEL_ID, "坐标标定服务", NotificationManager.IMPORTANCE_LOW)
+            val nm = getSystemService(NotificationManager::class.java)
+            nm.createNotificationChannel(channel)
+            val notification = NotificationCompat.Builder(this, CHANNEL_ID)
+                .setContentTitle("坐标标定中")
+                .setContentText("正在标定琴键坐标")
+                .setSmallIcon(R.mipmap.ic_launcher)
+                .setOngoing(true)
+                .build()
+            startForeground(NOTIFICATION_ID, notification)
+        }
+    }
+
+    private fun startCalibration() {
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M && !Settings.canDrawOverlays(this)) {
+            Log.e(TAG, "No overlay permission")
+            return
+        }
+        calibrationPoints.clear()
+        currentTarget = 0
+        createFloatingView()
+    }
+
+    private fun stopCalibration() {
+        removeOverlay()
+    }
+
+    // ==================== 悬浮标定窗口 ====================
+
+    private fun createFloatingView() {
+        windowManager = getSystemService(WINDOW_SERVICE) as WindowManager
+
+        layoutParams = WindowManager.LayoutParams().apply {
+            type = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+                WindowManager.LayoutParams.TYPE_APPLICATION_OVERLAY
+            } else {
+                @Suppress("DEPRECATION") WindowManager.LayoutParams.TYPE_PHONE
+            }
+            flags = WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE or
+                    WindowManager.LayoutParams.FLAG_LAYOUT_NO_LIMITS
+            format = PixelFormat.TRANSLUCENT
+            width = WindowManager.LayoutParams.WRAP_CONTENT
+            height = WindowManager.LayoutParams.WRAP_CONTENT
+            gravity = Gravity.TOP or Gravity.END
+            x = 40
+            y = 150
+        }
+
+        floatingView = LayoutInflater.from(this).inflate(R.layout.floating_calibration_view, null)
+
+        tvStep = floatingView?.findViewById(R.id.tvStep)
+        tvProgressBadge = floatingView?.findViewById(R.id.tvProgressBadge)
+        calibrateBtn = floatingView?.findViewById<LinearLayout>(R.id.btnCalibrate)
+        val btnFinish = floatingView?.findViewById<LinearLayout>(R.id.btnFinish)
+        val btnCancel = floatingView?.findViewById<LinearLayout>(R.id.btnCancel)
+
+        updateUI()
+
+        calibrateBtn?.setOnClickListener {
+            when (calibrationPoints.size) {
+                0 -> showOverlayAndWait("请点击最左边琴键的位置")
+                1 -> showOverlayAndWait("请点击最右边琴键的位置")
+                else -> finishCalibration()
+            }
+        }
+
+        btnFinish?.setOnClickListener {
+            if (calibrationPoints.size >= 2) finishCalibration()
+            else Toast.makeText(this, "请先标定左右两个琴键", Toast.LENGTH_SHORT).show()
+        }
+
+        btnCancel?.setOnClickListener {
+            stopCalibration()
+            stopSelf()
+        }
+
+        // 拖动
+        floatingView?.findViewById<LinearLayout>(R.id.dragHandle)?.setOnTouchListener { _, event ->
+            when (event.action) {
+                android.view.MotionEvent.ACTION_DOWN -> {
+                    dragStartX = layoutParams?.x ?: 0
+                    dragStartY = layoutParams?.y ?: 0
+                    dragStartTouchX = event.rawX
+                    dragStartTouchY = event.rawY
+                    true
+                }
+                android.view.MotionEvent.ACTION_MOVE -> {
+                    layoutParams?.apply {
+                        x = dragStartX + (event.rawX - dragStartTouchX).toInt()
+                        y = dragStartY + (event.rawY - dragStartTouchY).toInt()
+                    }
+                    floatingView?.let { windowManager?.updateViewLayout(it, layoutParams) }
+                    true
+                }
+                else -> false
+            }
+        }
+
+        windowManager?.addView(floatingView, layoutParams)
+    }
+
+    // ==================== 触摸覆盖层 ====================
+
+    private fun showOverlayAndWait(message: String) {
+        val dm = resources.displayMetrics
+
+        overlayParams = WindowManager.LayoutParams().apply {
+            type = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+                WindowManager.LayoutParams.TYPE_APPLICATION_OVERLAY
+            } else {
+                @Suppress("DEPRECATION") WindowManager.LayoutParams.TYPE_PHONE
+            }
+            // 关键：FLAG_NOT_FOCUSABLE 让触摸事件由 overlay 自己处理
+            // 不设置 FLAG_NOT_TOUCH_MODAL，这样 overlay 接收所有触摸
+            flags = WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE or
+                    WindowManager.LayoutParams.FLAG_LAYOUT_IN_SCREEN
+            format = PixelFormat.TRANSLUCENT
+            width = dm.widthPixels
+            height = dm.heightPixels
+            gravity = Gravity.TOP or Gravity.START
+            x = 0
+            y = 0
+        }
+
+        touchOverlay = object : View(this) {
+            override fun onTouchEvent(event: android.view.MotionEvent?): Boolean {
+                return true // 消费触摸事件
+            }
+        }.apply {
+            // 极淡的紫色半透明，用户能看到下面的琴键
+            setBackgroundColor(Color.parseColor("#10000000"))
+
+            // 在中央显示提示文字
+            // 我们用Toast代替，因为overlay上绘制文字比较复杂
+
+            setOnClickListener { v ->
+                // 这个不会被调用，因为我们用 onTouchEvent 处理
+            }
+
+            setOnTouchListener { _, event ->
+                if (event.action == android.view.MotionEvent.ACTION_DOWN) {
+                    val x = event.rawX.toInt()
+                    val y = event.rawY.toInt()
+                    Log.d(TAG, "Overlay touch captured: ($x, $y)")
+                    onTouchCaptured(x, y)
+                }
+                true // 消费事件
+            }
+        }
+
+        try {
+            windowManager?.addView(touchOverlay, overlayParams)
+            floatingView?.visibility = View.GONE
+            Toast.makeText(this, message, Toast.LENGTH_LONG).show()
+            Log.d(TAG, "Overlay shown: $message")
+        } catch (e: Exception) {
+            Log.e(TAG, "Failed to show overlay", e)
+            Toast.makeText(this, "无法显示覆盖层: ${e.message}", Toast.LENGTH_LONG).show()
+        }
+    }
+
+    private fun removeOverlay() {
+        try {
+            touchOverlay?.let { windowManager?.removeView(it) }
+        } catch (e: Exception) {
+            Log.e(TAG, "Error removing overlay", e)
+        }
+        touchOverlay = null
+        overlayParams = null
+    }
+
+    private fun onTouchCaptured(x: Int, y: Int) {
+        removeOverlay()
+        floatingView?.visibility = View.VISIBLE
+
+        calibrationPoints.add(Pair(x, y))
+        currentTarget = calibrationPoints.size
+
+        Log.d(TAG, "Point ${calibrationPoints.size} captured: ($x, $y)")
+
+        when (calibrationPoints.size) {
+            1 -> {
+                updateUI()
+                Toast.makeText(this, "✓ 左边界已记录 (${x},${y})！现在点击「标定」记录右边界", Toast.LENGTH_SHORT).show()
+            }
+            2 -> {
+                updateUI()
+                Toast.makeText(this, "✓ 右边界已记录 (${x},${y})！点击「完成」保存", Toast.LENGTH_SHORT).show()
+            }
+        }
+    }
+
+    // ==================== UI & 保存 ====================
+
+    private fun updateUI() {
+        tvProgressBadge?.text = "${calibrationPoints.size}/2"
+        val btnText = floatingView?.findViewById<TextView>(R.id.btn_calibrate_text)
+        when (calibrationPoints.size) {
+            0 -> {
+                tvStep?.text = "点击按钮开始标定琴键位置"
+                btnText?.text = "标定左边界"
+            }
+            1 -> {
+                tvStep?.text = "已标定左边界 ✓"
+                btnText?.text = "标定右边界"
+            }
+            2 -> {
+                tvStep?.text = "标定完成！点击「完成」保存"
+                btnText?.text = "标定完成"
+            }
+        }
+    }
+
+    private fun finishCalibration() {
+        if (calibrationPoints.size < 2) {
+            Toast.makeText(this, "请先完成左右两个琴键的标定", Toast.LENGTH_SHORT).show()
+            return
+        }
+
+        val coordinates = generateCoordinates()
+        Log.d(TAG, "Generated ${coordinates.size} keys: (${coordinates[0].centerX},${coordinates[0].centerY}) -> (${coordinates[totalKeys-1].centerX},${coordinates[totalKeys-1].centerY})")
+
+        scope.launch {
+            try {
+                val app = SupportedApps.findByPackage(currentAppPackage) ?: SupportedApps.getDefault()
+                val repository = CoordinateRepository(applicationContext)
+                val dm = resources.displayMetrics
+
+                val entity = CoordinateEntity(
+                    deviceId = repository.generateDeviceId(currentAppPackage, dm.widthPixels, dm.heightPixels),
+                    packageName = currentAppPackage,
+                    appName = app.appName,
+                    screenWidth = dm.widthPixels,
+                    screenHeight = dm.heightPixels,
+                    keyCount = totalKeys,
+                    calibrationMode = "OVERLAY",
+                    keyCoordinates = Gson().toJson(coordinates)
+                )
+
+                repository.saveCoordinate(entity)
+
+                withContext(Dispatchers.Main) {
+                    Toast.makeText(applicationContext, "标定完成！${totalKeys}个琴键坐标已保存\n正在启动演奏控制面板...", Toast.LENGTH_LONG).show()
+                }
+
+                // 标定完成后延迟启动悬浮播放器
+                delay(1500)
+                withContext(Dispatchers.Main) {
+                    // 启动悬浮播放器，让用户可以立即在钢琴应用上选择音乐播放
+                    FloatingPlayerService.start(applicationContext, currentAppPackage)
+                }
+            } catch (e: Exception) {
+                Log.e(TAG, "Save failed", e)
+                withContext(Dispatchers.Main) {
+                    Toast.makeText(applicationContext, "保存失败: ${e.message}", Toast.LENGTH_LONG).show()
+                }
+            } finally {
+                stopCalibration()
+                stopSelf()
+            }
+        }
+    }
+
+    private fun generateCoordinates(): List<PianoKeyCoordinate> {
+        val sorted = calibrationPoints.sortedBy { it.first }
+        return coordinateManager.calculateByBoundary(sorted.first(), sorted.last(), totalKeys, rowCount = keyRowCount)
+    }
+}

@@ -1,0 +1,55 @@
+"""
+会话临时文件管理器
+- 每会话独立 UUID 目录
+- 注册所有临时文件
+- cleanup() 一键清空
+【开发状态：已完成】
+"""
+
+import shutil
+import uuid
+from pathlib import Path
+from app.settings import TEMP_DIR
+
+
+class TempFileManager:
+    """管理会话期间的临时文件，退出时自动清理"""
+
+    def __init__(self):
+        self._session_id = uuid.uuid4().hex[:12]
+        self._session_dir = TEMP_DIR / self._session_id
+        self._session_dir.mkdir(parents=True, exist_ok=True)
+        self._registry: set[Path] = set()
+
+    @property
+    def session_dir(self) -> Path:
+        return self._session_dir
+
+    def create_temp_file(self, suffix: str = ".mp4") -> Path:
+        """创建临时文件路径并注册（不创建空文件，由 FFmpeg 写入）"""
+        name = f"{uuid.uuid4().hex}{suffix}"
+        path = self._session_dir / name
+        self._registry.add(path)
+        return path
+
+    def create_temp_dir(self, prefix: str = "") -> Path:
+        """创建子目录并注册"""
+        name = f"{prefix}_{uuid.uuid4().hex[:8]}"
+        dir_path = self._session_dir / name
+        dir_path.mkdir(exist_ok=True)
+        return dir_path
+
+    def register(self, path: Path):
+        """手动注册额外文件"""
+        self._registry.add(Path(path))
+
+    def unregister(self, path: Path):
+        """移除注册（文件已删除或已移动）"""
+        self._registry.discard(Path(path))
+
+    def cleanup(self):
+        """删除整个会话临时目录"""
+        try:
+            shutil.rmtree(self._session_dir, ignore_errors=True)
+        except Exception:
+            pass

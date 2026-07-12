@@ -1,0 +1,421 @@
+"""
+EditTab — 视频工作台
+播放 + 基础编辑 + 裁剪 + 特效 + 音频 + 帧提取
+【开发状态：已完成】
+"""
+
+import os
+import subprocess
+import sys
+from PyQt6.QtWidgets import (
+    QWidget, QVBoxLayout, QHBoxLayout, QLabel, QPushButton,
+    QGroupBox, QFileDialog, QDoubleSpinBox, QCheckBox,
+    QListWidget, QListWidgetItem, QTreeWidget, QTreeWidgetItem,
+    QScrollArea, QSpinBox, QComboBox, QLineEdit, QMessageBox,
+    QDialog,
+)
+from PyQt6.QtCore import Qt, QThread, pyqtSignal
+from app.theme import COLORS
+from app.widgets.video_preview import VideoPreview
+from app.widgets.help_dialog import HelpDialog
+from app.editing.trim import TrimHandler
+from app.editing.concat import ConcatHandler
+from app.effects.pipeline import EffectPipeline
+from app.effects.registry import EffectRegistry
+from app.ffmpeg.probe import FFprobeReader
+from app.settings import FFMPEG_PATH, FFPROBE_PATH, OUTPUT_DIR
+from app.utils.file_utils import format_duration, format_filesize, sanitize_filename
+
+
+class EditTab(QWidget):
+    source_changed = pyqtSignal(str)
+    status_message = pyqtSignal(str)       # 状态栏消息
+    progress_update = pyqtSignal(int)      # 进度 0-100
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self._source = ""
+        self._trim = TrimHandler()
+        self._concat = ConcatHandler()
+        self._pipeline = EffectPipeline(self)
+        self._pipeline.effects_changed.connect(lambda: None)
+        self._workers: list = []  # 保持线程引用
+        self._init_ui()
+
+    def _init_ui(self):
+        root = QVBoxLayout(self); root.setContentsMargins(12, 8, 12, 8); root.setSpacing(8)
+
+        # === 顶栏 ===
+        bar = QHBoxLayout()
+        bar.addWidget(QLabel("🎬 视频工作台"))
+        self._open_btn = QPushButton("📂 导入"); self._open_btn.clicked.connect(self._open_file); bar.addWidget(self._open_btn)
+        self._info_lbl = QLabel("未加载"); self._info_lbl.setStyleSheet(f"color:{COLORS['text_secondary']};font-size:12px;"); bar.addWidget(self._info_lbl)
+        bar.addStretch()
+        help_btn = QPushButton("❓ 帮助"); help_btn.setProperty("class", "secondary")
+        help_btn.clicked.connect(self._show_help); bar.addWidget(help_btn)
+        root.addLayout(bar)
+
+        # === 主体 ===
+        body = QHBoxLayout(); body.setSpacing(8)
+
+        # -- 左侧播放器 --
+        self._preview = VideoPreview()
+        left = QVBoxLayout(); left.addWidget(self._preview, 1)
+
+        # 时间轴裁剪条
+        trim_bar = QHBoxLayout(); trim_bar.setSpacing(8)
+        trim_bar.addWidget(QLabel("裁剪:"))
+        self._t_start = QDoubleSpinBox(); self._t_start.setRange(0, 99999); self._t_start.setDecimals(1); self._t_start.setPrefix("从 ")
+        self._t_start.valueChanged.connect(lambda v: setattr(self._trim, 'start_sec', v)); trim_bar.addWidget(self._t_start)
+        self._t_end = QDoubleSpinBox(); self._t_end.setRange(0, 99999); self._t_end.setDecimals(1); self._t_end.setPrefix("到 ")
+        self._t_end.valueChanged.connect(lambda v: setattr(self._trim, 'end_sec', v)); trim_bar.addWidget(self._t_end)
+        mark_s = QPushButton("设起点"); mark_s.clicked.connect(lambda: self._t_start.setValue(self._preview.get_position())); trim_bar.addWidget(mark_s)
+        mark_e = QPushButton("设终点"); mark_e.clicked.connect(lambda: self._t_end.setValue(self._preview.get_position())); trim_bar.addWidget(mark_e)
+        trim_bar.addStretch(); left.addLayout(trim_bar)
+        body.addLayout(left, 3)
+
+        # -- 右侧工具面板 --
+        scroll = QScrollArea(); scroll.setWidgetResizable(True); scroll.setFixedWidth(460)
+        tools = QWidget(); tools_layout = QVBoxLayout(tools); tools_layout.setSpacing(8)
+
+        # 1. 视频信息
+        self._info_grp = QGroupBox("📊 视频信息"); self._info_grid = QVBoxLayout(self._info_grp)
+        self._info_text = QLabel(""); self._info_text.setStyleSheet(f"color:{COLORS['text_secondary']};font-size:11px;"); self._info_text.setWordWrap(True)
+        self._info_grid.addWidget(self._info_text); tools_layout.addWidget(self._info_grp)
+
+        # 2. 格式转换
+        conv = QGroupBox("🔄 格式转换")
+        cl = QHBoxLayout(conv)
+        self._fmt_combo = QComboBox(); self._fmt_combo.addItems(["mp4","mov","avi","mkv","webm","mp3","wav","gif"]); cl.addWidget(self._fmt_combo)
+        conv_btn = QPushButton("转换"); conv_btn.clicked.connect(self._convert); cl.addWidget(conv_btn)
+        tools_layout.addWidget(conv)
+
+        # 3. 音频
+        audio = QGroupBox("🔊 音频处理")
+        al = QVBoxLayout(audio)
+        ar1 = QHBoxLayout()
+        extract_btn = QPushButton("提取音频"); extract_btn.clicked.connect(self._extract_audio); ar1.addWidget(extract_btn)
+        mute_btn = QPushButton("静音视频"); mute_btn.clicked.connect(self._mute_video); ar1.addWidget(mute_btn)
+        al.addLayout(ar1)
+        ar2 = QHBoxLayout(); ar2.addWidget(QLabel("替换BGM:"))
+        self._bgm_path = QLineEdit(); self._bgm_path.setPlaceholderText("选择音频文件..."); self._bgm_path.setReadOnly(True); ar2.addWidget(self._bgm_path)
+        bgm_sel = QPushButton("..."); bgm_sel.clicked.connect(self._pick_bgm); ar2.addWidget(bgm_sel)
+        bgm_do = QPushButton("替换"); bgm_do.clicked.connect(self._replace_bgm); ar2.addWidget(bgm_do)
+        al.addLayout(ar2)
+
+        # 音量
+        ar3 = QHBoxLayout(); ar3.addWidget(QLabel("音量比例:"))
+        self._vol_ratio = QDoubleSpinBox(); self._vol_ratio.setRange(0.1, 3.0); self._vol_ratio.setValue(1.0); self._vol_ratio.setSingleStep(0.1); ar3.addWidget(self._vol_ratio)
+        vol_btn = QPushButton("调整音量"); vol_btn.clicked.connect(self._adjust_volume); ar3.addWidget(vol_btn)
+        al.addLayout(ar3)
+        tools_layout.addWidget(audio)
+
+        # 4. 字幕
+        sub = QGroupBox("📝 字幕"); sl = QHBoxLayout(sub)
+        self._sub_path = QLineEdit(); self._sub_path.setPlaceholderText("选择 SRT/ASS 字幕..."); self._sub_path.setReadOnly(True); sl.addWidget(self._sub_path)
+        sub_sel = QPushButton("..."); sub_sel.clicked.connect(self._pick_sub); sl.addWidget(sub_sel)
+        sub_burn = QPushButton("烧录"); sub_burn.clicked.connect(self._burn_sub); sl.addWidget(sub_burn)
+        tools_layout.addWidget(sub)
+
+        # 5. 帧/图
+        frame = QGroupBox("🖼 帧处理"); fl = QHBoxLayout(frame)
+        frame_btn = QPushButton("截取当前帧"); frame_btn.clicked.connect(self._capture_frame); fl.addWidget(frame_btn)
+        gif_btn = QPushButton("生成 GIF"); gif_btn.clicked.connect(self._make_gif); fl.addWidget(gif_btn)
+        tools_layout.addWidget(frame)
+
+        # 6. 拼接
+        concat_grp = QGroupBox("🔗 拼接")
+        cl2 = QVBoxLayout(concat_grp)
+        self._concat_list = QListWidget(); self._concat_list.setMaximumHeight(70); cl2.addWidget(self._concat_list)
+        cb = QHBoxLayout(); add_c = QPushButton("+"); add_c.clicked.connect(self._add_concat); cb.addWidget(add_c)
+        rm_c = QPushButton("-"); rm_c.clicked.connect(self._remove_concat); cb.addWidget(rm_c)
+        concat_do = QPushButton("合并拼接"); concat_do.clicked.connect(self._do_concat); cb.addWidget(concat_do); cl2.addLayout(cb)
+        tools_layout.addWidget(concat_grp)
+
+        # 7. 特效
+        fx = QGroupBox("✦ 鬼畜特效")
+        fxl = QVBoxLayout(fx)
+        self._fx_list = QListWidget(); self._fx_list.setMaximumHeight(80); fxl.addWidget(self._fx_list)
+        self._fx_tree = QTreeWidget(); self._fx_tree.setHeaderHidden(True); self._fx_tree.setMaximumHeight(140)
+        self._populate_fx_tree(); self._fx_tree.itemDoubleClicked.connect(self._add_fx); fxl.addWidget(self._fx_tree)
+        fxb = QHBoxLayout()
+        rm_fx = QPushButton("移除"); rm_fx.clicked.connect(self._remove_fx); fxb.addWidget(rm_fx)
+        self._fx_enable = QCheckBox("启用"); self._fx_enable.setChecked(True); fxb.addWidget(self._fx_enable)
+        fxl.addLayout(fxb)
+        self._fx_params_w = QWidget(); self._fx_params_l = QVBoxLayout(self._fx_params_w); self._fx_params_l.setContentsMargins(0, 0, 0, 0)
+        fxl.addWidget(self._fx_params_w)
+        self._fx_list.itemClicked.connect(self._on_fx_select)
+
+        # 预览按钮
+        fx_prev_btn = QPushButton("👁 预览特效帧")
+        fx_prev_btn.clicked.connect(self._preview_effects)
+        fxl.addWidget(fx_prev_btn)
+
+        tools_layout.addWidget(fx)
+
+        tools_layout.addStretch()
+        scroll.setWidget(tools); body.addWidget(scroll)
+        root.addLayout(body, 1)
+
+    # ===== 视频加载 =====
+    def _open_file(self):
+        path, _ = QFileDialog.getOpenFileName(self, "选择视频", "", "视频 (*.mp4 *.mov *.avi *.mkv *.webm *.flv *.wmv);;全部 (*.*)")
+        if path: self.load_source(path)
+
+    def load_source(self, path: str):
+        self._source = path; self._preview.load_video(path)
+        probe = FFprobeReader(path); info = probe.get_video_info()
+        dur = info.get("duration", 0)
+        self._info_lbl.setText(f"{info.get('width',0)}x{info.get('height',0)} | {format_duration(dur)} | {format_filesize(info.get('size_bytes',0))}")
+        self._info_text.setText(
+            f"路径: {path}\n分辨率: {info.get('width',0)}x{info.get('height',0)}\n"
+            f"时长: {format_duration(dur)}\n帧率: {info.get('fps',0):.1f} fps\n"
+            f"视频编码: {info.get('vcodec','?')}\n音频编码: {info.get('acodec','?')}\n"
+            f"大小: {format_filesize(info.get('size_bytes',0))}\n格式: {info.get('format','?')}"
+        )
+        self._t_end.setValue(dur)
+        self._concat.add_file(path)
+        self._concat_list.addItem(os.path.basename(path))
+        self.source_changed.emit(path)
+
+    # ===== 格式转换 =====
+    def _convert(self):
+        if not self._source: return
+        fmt = self._fmt_combo.currentText()
+        base = sanitize_filename(os.path.splitext(os.path.basename(self._source))[0])
+        out = os.path.join(str(OUTPUT_DIR), f"{base}_converted.{fmt}")
+        if fmt in ("mp3","wav"):
+            cmd = [FFMPEG_PATH, "-y", "-i", self._source, "-vn", "-c:a", "libmp3lame" if fmt=="mp3" else "pcm_s16le", out]
+        elif fmt == "gif":
+            cmd = [FFMPEG_PATH, "-y", "-i", self._source, "-vf", "fps=10,scale=480:-1", "-loop", "0", out]
+        else:
+            cmd = [FFMPEG_PATH, "-y", "-i", self._source, "-c:v", "libx264", "-c:a", "aac", out]
+        self._run_ffmpeg(cmd, f"转换完成:\n{out}")
+
+    # ===== 音频 =====
+    def _extract_audio(self):
+        if not self._source: return
+        out = os.path.join(str(OUTPUT_DIR), f"{sanitize_filename(os.path.splitext(os.path.basename(self._source))[0])}_audio.mp3")
+        self._run_ffmpeg([FFMPEG_PATH,"-y","-i", self._source, "-vn","-c:a","libmp3lame","-q:a","2", out], f"音频提取完成:\n{out}")
+
+    def _mute_video(self):
+        if not self._source: return
+        out = os.path.join(str(OUTPUT_DIR), f"{sanitize_filename(os.path.splitext(os.path.basename(self._source))[0])}_muted.mp4")
+        self._run_ffmpeg([FFMPEG_PATH,"-y","-i", self._source, "-c:v","copy","-an", out], f"静音视频完成:\n{out}")
+
+    def _pick_bgm(self):
+        path, _ = QFileDialog.getOpenFileName(self, "选择音频", "", "音频 (*.mp3 *.wav *.aac *.flac *.ogg);;全部 (*.*)")
+        if path: self._bgm_path.setText(path)
+
+    def _replace_bgm(self):
+        if not self._source or not self._bgm_path.text(): return
+        out = os.path.join(str(OUTPUT_DIR), f"{sanitize_filename(os.path.splitext(os.path.basename(self._source))[0])}_newbgm.mp4")
+        vol = self._vol_ratio.value()
+        cmd = [FFMPEG_PATH,"-y","-i", self._source,"-i", self._bgm_path.text(),
+               "-c:v","copy","-map","0:v:0","-map","1:a:0","-c:a","aac","-b:a","128k","-shortest"]
+        if vol != 1.0: cmd.extend(["-af", f"volume={vol}"])
+        cmd.append(out)
+        self._run_ffmpeg(cmd, f"BGM替换完成:\n{out}")
+
+    def _adjust_volume(self):
+        if not self._source: return
+        vol = self._vol_ratio.value()
+        out = os.path.join(str(OUTPUT_DIR), f"{sanitize_filename(os.path.splitext(os.path.basename(self._source))[0])}_vol{vol:.1f}.mp4")
+        self._run_ffmpeg([FFMPEG_PATH,"-y","-i", self._source, "-c:v","copy", "-af",f"volume={vol}", out], f"音量调整完成:\n{out}")
+
+    # ===== 字幕 =====
+    def _pick_sub(self):
+        path, _ = QFileDialog.getOpenFileName(self, "选择字幕", "", "字幕 (*.srt *.ass *.vtt);;全部 (*.*)")
+        if path: self._sub_path.setText(path)
+
+    def _burn_sub(self):
+        if not self._source or not self._sub_path.text(): return
+        sub = os.path.abspath(self._sub_path.text()).replace("\\","/").replace(":","\\\\:")
+        out = os.path.join(str(OUTPUT_DIR), f"{sanitize_filename(os.path.splitext(os.path.basename(self._source))[0])}_subbed.mp4")
+        ext = os.path.splitext(self._sub_path.text())[1].lower()
+        vf = f"ass={sub}" if ext == ".ass" else f"subtitles={sub}"
+        self._run_ffmpeg([FFMPEG_PATH,"-y","-i", self._source, "-vf", vf, "-c:a","copy", out], f"字幕烧录完成:\n{out}")
+
+    # ===== 帧 =====
+    def _capture_frame(self):
+        if not self._source: return
+        pos = self._preview.get_position()
+        out = os.path.join(str(OUTPUT_DIR), f"{sanitize_filename(os.path.splitext(os.path.basename(self._source))[0])}_frame_{pos:.1f}s.png")
+        self._run_ffmpeg([FFMPEG_PATH,"-y","-ss", str(pos), "-i", self._source, "-vframes","1", out], f"帧截图已保存:\n{out}")
+
+    def _make_gif(self):
+        if not self._source: return
+        start = self._t_start.value(); dur = max(1, self._t_end.value() - start) if self._t_end.value() > start else 3
+        out = os.path.join(str(OUTPUT_DIR), f"{sanitize_filename(os.path.splitext(os.path.basename(self._source))[0])}.gif")
+        self._run_ffmpeg([FFMPEG_PATH,"-y","-ss", str(start), "-t", str(dur), "-i", self._source,
+                          "-vf","fps=10,scale=480:-1:flags=lanczos", out], f"GIF已生成:\n{out}")
+
+    # ===== 拼接 =====
+    def _add_concat(self):
+        p, _ = QFileDialog.getOpenFileName(self, "选择视频", "", "视频 (*.mp4 *.mov *.avi *.mkv *.webm)")
+        if p: self._concat.add_file(p); self._concat_list.addItem(os.path.basename(p))
+
+    def _remove_concat(self):
+        r = self._concat_list.currentRow()
+        if r >= 0: self._concat_list.takeItem(r); self._concat.remove_file(r)
+
+    def _do_concat(self):
+        if len(self._concat) < 2: return
+        # 写 concat 文件列表
+        import tempfile
+        with tempfile.NamedTemporaryFile(mode="w", suffix=".txt", delete=False, encoding="utf-8") as f:
+            for fp in self._concat.files:
+                f.write(f"file '{os.path.abspath(fp).replace(chr(92), '/')}'\n")
+            list_path = f.name
+        out = os.path.join(str(OUTPUT_DIR), f"{sanitize_filename(os.path.splitext(os.path.basename(self._source))[0])}_merged.mp4")
+        self._run_ffmpeg([FFMPEG_PATH,"-y","-f","concat","-safe","0","-i", list_path, "-c","copy", out],
+                         f"拼接完成:\n{out}", cleanup=list_path)
+
+    # ===== 特效 =====
+    def _populate_fx_tree(self):
+        from app.effects import time, spatial, color, blur_noise, overlay, keying, audio, combo  # noqa
+        for cat, names in sorted(EffectRegistry.all_categories().items()):
+            ci = QTreeWidgetItem([cat])
+            for n in sorted(names): ch = QTreeWidgetItem([n]); ch.setData(0, Qt.ItemDataRole.UserRole, n); ci.addChild(ch)
+            self._fx_tree.addTopLevelItem(ci)
+        self._fx_tree.expandAll()
+
+    def _add_fx(self, item, col):
+        n = item.data(0, Qt.ItemDataRole.UserRole)
+        if not n: return
+        e = EffectRegistry.instantiate(n)
+        if e: self._pipeline.add(e); self._refresh_fx()
+
+    def _remove_fx(self):
+        r = self._fx_list.currentRow()
+        if r >= 0: self._pipeline.remove(r); self._refresh_fx()
+
+    def _refresh_fx(self):
+        self._fx_list.clear()
+        for e in self._pipeline:
+            i = QListWidgetItem(f"{'✅' if e.enabled else '❌'} {e.name}")
+            i.setData(Qt.ItemDataRole.UserRole, self._pipeline._effects.index(e)); self._fx_list.addItem(i)
+
+    def _on_fx_select(self, item):
+        idx = item.data(Qt.ItemDataRole.UserRole)
+        if idx is None or idx >= len(self._pipeline): return
+        self._show_fx_params(idx)
+
+    def _show_fx_params(self, idx):
+        while self._fx_params_l.count():
+            c = self._fx_params_l.takeAt(0)
+            if c.widget(): c.widget().deleteLater()
+        eff = self._pipeline[idx]
+        cb = QCheckBox("启用"); cb.setChecked(eff.enabled)
+        cb.toggled.connect(lambda v: (setattr(eff,'enabled',v), self._refresh_fx())); self._fx_params_l.addWidget(cb)
+        for p in eff.get_param_defs():
+            self._fx_params_l.addWidget(QLabel(p.label))
+            if isinstance(p.options, list) and len(p.options) > 0:
+                w = QComboBox()
+                for v, lb in p.options: w.addItem(str(lb), v)
+                default_val = eff.get_param(p.name)
+                match_idx = 0
+                for i_opt, (v_opt, _) in enumerate(p.options):
+                    if v_opt == default_val: match_idx = i_opt; break
+                w.setCurrentIndex(match_idx)
+                w.currentIndexChanged.connect(lambda i, n=p.name, o=p.options: eff.set_param(n, o[i][0])); self._fx_params_l.addWidget(w)
+            elif p.param_type is float:
+                w = QDoubleSpinBox(); w.setRange(p.min_val or 0, p.max_val or 100)
+                if p.step: w.setSingleStep(p.step)
+                w.setValue(eff.get_param(p.name) or 0)
+                if p.suffix: w.setSuffix(f" {p.suffix}")
+                w.valueChanged.connect(lambda v, n=p.name: eff.set_param(n, v)); self._fx_params_l.addWidget(w)
+            elif p.param_type is int:
+                w = QSpinBox(); w.setRange(int(p.min_val or 0), int(p.max_val or 100))
+                w.setValue(eff.get_param(p.name) or 0)
+                if p.suffix: w.setSuffix(f" {p.suffix}")
+                w.valueChanged.connect(lambda v, n=p.name: eff.set_param(n, v)); self._fx_params_l.addWidget(w)
+
+    # ===== 通用 FFmpeg 运行 =====
+    def _run_ffmpeg(self, cmd: list, success_msg: str, cleanup: str = None):
+        """后台异步运行 FFmpeg，通过状态栏反馈进度"""
+        self.status_message.emit("⏳ FFmpeg 处理中...")
+        self.progress_update.emit(0)
+
+        class _Worker(QThread):
+            done = pyqtSignal(bool, str)
+            def run(self):
+                try:
+                    proc = subprocess.run(cmd, capture_output=True, encoding="utf-8", errors="replace", timeout=300,
+                        creationflags=subprocess.CREATE_NO_WINDOW if sys.platform=="win32" else 0)
+                    self.done.emit(proc.returncode == 0, proc.stderr[-300:] if proc.returncode != 0 else "")
+                except Exception as e:
+                    self.done.emit(False, str(e))
+        worker = _Worker()
+        self._workers.append(worker)
+
+        def on_done(ok, err):
+            if ok:
+                self.status_message.emit(f"✅ {success_msg}")
+                self.progress_update.emit(100)
+                QMessageBox.information(self, "完成", success_msg)
+            else:
+                self.status_message.emit(f"❌ 处理失败: {err[:100]}")
+                QMessageBox.warning(self, "失败", f"FFmpeg 错误:\n{err}")
+            if cleanup and os.path.exists(cleanup):
+                os.unlink(cleanup)
+            self._workers = [w for w in self._workers if w is not worker]
+
+        worker.done.connect(on_done)
+        worker.finished.connect(worker.deleteLater)
+        worker.start()
+
+    # ===== 公开 =====
+    def _preview_effects(self):
+        """渲染当前帧 + 特效 pipeline，弹窗展示"""
+        if not self._source or len(self._pipeline) == 0:
+            QMessageBox.information(self, "提示", "请先加载视频并添加特效")
+            return
+        vid_graph, vid_label = self._pipeline.build_video_filter_graph()
+        if not vid_graph.strip():
+            QMessageBox.information(self, "提示", "没有启用的特效可预览")
+            return
+
+        pos = self._preview.get_position()
+        out_img = os.path.join(str(OUTPUT_DIR), "_preview_frame.png")
+
+        cmd = [FFMPEG_PATH, "-y", "-ss", str(pos), "-i", self._source,
+               "-vframes", "1", "-filter_complex", vid_graph,
+               "-map", vid_label if vid_label != "0:v" else "0:v",
+               "-f", "image2", out_img]
+
+        self.status_message.emit("⏳ 正在渲染特效预览...")
+        def _do():
+            proc = subprocess.run(cmd, capture_output=True, encoding="utf-8", errors="replace", timeout=30,
+                creationflags=subprocess.CREATE_NO_WINDOW if sys.platform=="win32" else 0)
+            ok = proc.returncode == 0 and os.path.exists(out_img) and os.path.getsize(out_img) > 0
+            if ok:
+                self.status_message.emit(f"✅ 特效预览完成 — {out_img}")
+                # 弹窗显示
+                pix = QPixmap(out_img)
+                if not pix.isNull():
+                    dlg = QDialog(self); dlg.setWindowTitle("特效预览"); dlg.resize(800, 500)
+                    dl = QVBoxLayout(dlg)
+                    lbl = QLabel(); lbl.setPixmap(pix.scaled(780, 460, Qt.AspectRatioMode.KeepAspectRatio, Qt.TransformationMode.SmoothTransformation))
+                    dl.addWidget(lbl)
+                    dlg.exec()
+                else:
+                    QMessageBox.warning(self, "预览失败", "特效渲染失败，请检查参数")
+            else:
+                self.status_message.emit("❌ 特效预览失败")
+                QMessageBox.warning(self, "错误", f"FFmpeg 错误:\n{proc.stderr[-300:]}")
+            try: os.unlink(out_img)
+            except: pass
+
+        t = QThread()
+        t.run = _do
+        self._workers.append(t)
+        t.finished.connect(t.deleteLater)
+        t.start()
+
+    def _show_help(self):
+        dlg = HelpDialog(self); dlg.exec()
+
+    def get_source(self) -> str: return self._source
+    def get_trim(self) -> TrimHandler: return self._trim
+    def get_pipeline(self) -> EffectPipeline: return self._pipeline

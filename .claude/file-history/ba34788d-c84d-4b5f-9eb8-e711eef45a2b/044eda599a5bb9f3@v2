@@ -1,0 +1,38 @@
+"""
+抠像特效：色度键（绿幕/蓝幕抠图）
+【开发状态：已完成】
+"""
+
+from app.effects.base import BaseEffect, EffectParam
+
+
+class ChromaKeyEffect(BaseEffect):
+    """绿幕/蓝幕抠图"""
+    name = "绿幕抠像"
+    category = "抠像"
+    description = "去除绿/蓝背景，替换为指定颜色"
+    status = "已完成"
+
+    @classmethod
+    def get_param_defs(cls):
+        return [
+            EffectParam("color", "扣除颜色", str, "green", options=[
+                ("green", "绿色"),
+                ("blue", "蓝色"),
+                ("0x00FF00", "自定义绿"),
+            ]),
+            EffectParam("similarity", "相似度", float, 0.3, 0.01, 1.0, 0.01),
+            EffectParam("blend", "边缘混合", float, 0.1, 0.0, 0.5, 0.01),
+            EffectParam("replace_color", "替换背景色", str, "black", options=[
+                ("black", "黑色"),
+                ("white", "白色"),
+                ("red", "红色"),
+                ("transparent", "透明"),
+            ]),
+        ]
+
+    def get_filter_string(self, in_label="0:v", out_label="v0"):
+        color = self.get_param("color") or "green"
+        similarity = self.get_param("similarity") or 0.3
+        blend = self.get_param("blend") or 0.1
+        return f"[{in_label}]chromakey=color={color}:similarity={similarity}:blend={blend}[{out_label}]"
