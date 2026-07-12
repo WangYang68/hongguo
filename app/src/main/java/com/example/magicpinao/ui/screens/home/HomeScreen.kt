@@ -223,8 +223,16 @@ fun HomeScreen(
                 hasCoordinates = uiState.hasCoordinates,
                 coordinateHint = when {
                     uiState.selectedAppPackage.isNullOrBlank() -> "请选择游戏"
-                    uiState.hasCoordinates -> uiState.coordinateSchemeName ?: "坐标已就绪"
-                    else -> "未标定坐标"
+                    uiState.hasCoordinates -> {
+                        val app = uiState.selectedAppPackage?.let { SupportedApps.findByPackage(it)?.appName }
+                        val scheme = uiState.coordinateSchemeName
+                        when {
+                            !scheme.isNullOrBlank() -> "● $scheme"
+                            app != null -> "● $app 坐标已就绪"
+                            else -> "● 坐标已就绪"
+                        }
+                    }
+                    else -> "未设置音符坐标"
                 },
                 onSettingsClick = {
                     val pkg = uiState.selectedAppPackage
@@ -233,6 +241,9 @@ fun HomeScreen(
                     } else {
                         viewModel.startCalibration(pkg)
                     }
+                },
+                onResetCoordinates = {
+                    viewModel.resetCoordinatesAndCalibrate()
                 },
                 onAppSelectorClick = { viewModel.toggleAppSelector() },
                 onRefreshClick = {
@@ -326,6 +337,7 @@ fun HomeScreen(
         ) {
             PlaybackFloatingBar(
                 musicTitle = uiState.currentMusicTitle ?: "未知曲目",
+                coordinateHint = uiState.coordinateSchemeName,
                 isPlaying = uiState.isPlaying,
                 onPauseClick = viewModel::pausePlayback,
                 onResumeClick = viewModel::resumePlayback,
@@ -397,13 +409,15 @@ fun HomeScreen(
         // 未标定坐标引导
         if (uiState.showCalibrationPrompt) {
             val pkg = uiState.calibratingAppPackage ?: uiState.selectedAppPackage
-            val appName = pkg?.let { SupportedApps.findByPackage(it)?.appName } ?: "目标应用"
+            val app = pkg?.let { SupportedApps.findByPackage(it) }
+            val appName = app?.appName ?: "目标应用"
+            val openLabel = app?.resolveOpenLabel() ?: appName
             AlertDialog(
                 onDismissRequest = { viewModel.dismissCalibrationPrompt() },
                 title = { Text("需要先设置音符坐标", color = TextPrimary, fontWeight = FontWeight.Bold) },
                 text = {
                     Text(
-                        "「$appName」还没有可用的音符坐标，无法播放。\n\n请先打开该应用的钢琴界面，完成悬浮标定后再播放。\n（例如 Genshin Piano 请选择「原神钢琴」）",
+                        "「$appName」还没有可用的音符坐标，无法播放。\n\n请先打开「$openLabel」并进入钢琴界面，完成悬浮标定后再播放。",
                         color = TextHint
                     )
                 },
@@ -429,13 +443,15 @@ fun HomeScreen(
         // 目标 App 未打开提示
         if (uiState.showTargetAppPrompt) {
             val pkg = uiState.targetAppPromptPackage ?: uiState.calibratingAppPackage
-            val appName = pkg?.let { SupportedApps.findByPackage(it)?.appName } ?: "目标应用"
+            val app = pkg?.let { SupportedApps.findByPackage(it) }
+            val openLabel = app?.resolveOpenLabel() ?: app?.appName ?: "对应软件"
             AlertDialog(
                 onDismissRequest = { viewModel.dismissTargetAppPrompt() },
-                title = { Text("请先打开「$appName」", color = TextPrimary, fontWeight = FontWeight.Bold) },
+                title = { Text("请先打开「$openLabel」", color = TextPrimary, fontWeight = FontWeight.Bold) },
                 text = {
                     Text(
-                        "设置音符坐标前，需要先启动「$appName」并进入钢琴键位界面。\n\n当前未检测到该应用在前台。请先打开后再继续标定。",
+                        "设置「${app?.appName ?: "当前游戏"}」的音符坐标前，需要先启动「$openLabel」并进入钢琴键位界面。\n\n" +
+                            "例如选择原神时，请打开 Genshin Piano（原神钢琴）；选择光遇时请打开光遇。",
                         color = TextHint
                     )
                 },
@@ -676,6 +692,7 @@ private fun HomeTopBar(
     hasCoordinates: Boolean,
     coordinateHint: String,
     onSettingsClick: () -> Unit,
+    onResetCoordinates: () -> Unit = {},
     onAppSelectorClick: () -> Unit,
     onRefreshClick: () -> Unit,
     onProfileClick: () -> Unit
@@ -743,7 +760,7 @@ private fun HomeTopBar(
                     }
                 }
             }
-            // 坐标状态条
+            // 坐标状态条：显示当前是原神/光遇等，可重置
             Row(
                 modifier = Modifier
                     .fillMaxWidth()
@@ -766,9 +783,16 @@ private fun HomeTopBar(
                     overflow = TextOverflow.Ellipsis,
                     modifier = Modifier.weight(1f)
                 )
-                if (!hasCoordinates && selectedAppName != "选择目标应用") {
+                if (hasCoordinates) {
                     Text(
-                        text = "点击齿轮标定",
+                        text = "重置坐标",
+                        style = MaterialTheme.typography.labelSmall,
+                        color = WarningOrange,
+                        modifier = Modifier.clickable(onClick = onResetCoordinates)
+                    )
+                } else if (selectedAppName != "选择目标应用") {
+                    Text(
+                        text = "去标定",
                         style = MaterialTheme.typography.labelSmall,
                         color = SecondaryCyan,
                         modifier = Modifier.clickable(onClick = onSettingsClick)
@@ -954,6 +978,7 @@ private fun EmptyStateView(message: String = "暂无音乐", hint: String = "") 
 @Composable
 private fun PlaybackFloatingBar(
     musicTitle: String,
+    coordinateHint: String? = null,
     isPlaying: Boolean,
     onPauseClick: () -> Unit,
     onResumeClick: () -> Unit,
@@ -991,9 +1016,23 @@ private fun PlaybackFloatingBar(
                     Column(modifier = Modifier.weight(1f)) {
                         Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(6.dp)) {
                             Box(modifier = Modifier.size(8.dp).clip(CircleShape).background(PrimaryPurpleLight))
-                            Text("正在演奏", style = MaterialTheme.typography.labelMedium, color = PrimaryPurpleLight, fontWeight = FontWeight.SemiBold)
+                            Text(
+                                if (isPlaying) "正在演奏" else "已暂停",
+                                style = MaterialTheme.typography.labelMedium,
+                                color = PrimaryPurpleLight,
+                                fontWeight = FontWeight.SemiBold
+                            )
                         }
                         Text(musicTitle, style = MaterialTheme.typography.titleMedium, color = TextPrimary, fontWeight = FontWeight.Bold, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                        if (!coordinateHint.isNullOrBlank()) {
+                            Text(
+                                "坐标: $coordinateHint",
+                                style = MaterialTheme.typography.labelSmall,
+                                color = SecondaryCyan,
+                                maxLines = 1,
+                                overflow = TextOverflow.Ellipsis
+                            )
+                        }
                     }
 
                     Row(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalAlignment = Alignment.CenterVertically) {
@@ -1042,11 +1081,11 @@ private fun AppSelectorDialog(
 ) {
     AlertDialog(
         onDismissRequest = onDismiss,
-        title = { Text("选择目标钢琴应用（将启动悬浮标定）", color = TextPrimary) },
+        title = { Text("选择目标钢琴应用", color = TextPrimary) },
         text = {
             Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
                 Text(
-                    "使用独立「Genshin Piano」请选「原神钢琴」。选中后会自动弹出标定悬浮窗。",
+                    "选「原神」请打开 Genshin Piano 设置 21 键；选「光遇」请打开光遇设置 15 键。选中后会引导打开对应软件并标定。",
                     color = TextHint,
                     style = MaterialTheme.typography.bodySmall
                 )
@@ -1064,7 +1103,11 @@ private fun AppSelectorDialog(
                             Column(modifier = Modifier.weight(1f)) {
                                 Text(app.appName, style = MaterialTheme.typography.titleSmall, color = TextPrimary, fontWeight = FontWeight.Bold)
                                 Text(app.description, style = MaterialTheme.typography.bodySmall, color = TextHint)
-                                Text("${app.keyCount} 键 · 点击开始标定", style = MaterialTheme.typography.labelSmall, color = SecondaryCyan)
+                                Text(
+                                    "${app.keyCount} 键 · 请打开「${app.resolveOpenLabel()}」",
+                                    style = MaterialTheme.typography.labelSmall,
+                                    color = SecondaryCyan
+                                )
                             }
                         }
                     }

@@ -971,7 +971,9 @@ class FloatingCalibrationService : Service() {
     }
 
     private fun getAppName() =
-        SupportedApps.findByPackage(currentAppPackage)?.appName ?: "目标应用"
+        SupportedApps.findByPackage(currentAppPackage)?.resolveOpenLabel()
+            ?: SupportedApps.findByPackage(currentAppPackage)?.appName
+            ?: "目标应用"
 
     private fun dp2px(dp: Int) = (dp * resources.displayMetrics.density).toInt()
 }

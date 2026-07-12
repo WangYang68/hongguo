@@ -30,10 +30,19 @@ class CoordinateRepository(private val context: Context) {
     }
     
     /**
-     * 根据包名获取坐标配置
+     * 根据包名获取坐标配置（兼容原神旧包名 → Genshin Piano）
      */
     suspend fun getCoordinateByPackage(packageName: String): CoordinateEntity? {
-        return coordinateDao.getCoordinateByPackage(packageName)
+        val primary = coordinateDao.getCoordinateByPackage(packageName)
+        if (primary != null) return primary
+        // 旧版「原神」坐标可能存在原神本体包名下
+        if (packageName == "com.PA.GenshinPiano") {
+            return coordinateDao.getCoordinateByPackage("com.miHoYo.GenshinImpact")
+        }
+        if (packageName == "com.miHoYo.GenshinImpact") {
+            return coordinateDao.getCoordinateByPackage("com.PA.GenshinPiano")
+        }
+        return null
     }
     
     /**

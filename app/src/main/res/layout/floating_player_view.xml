@@ -96,6 +96,17 @@
                     android:textColor="#A29BFE"
                     android:textSize="11sp"
                     android:layout_marginTop="2dp" />
+
+                <TextView
+                    android:id="@+id/tvCoordScheme"
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:text="坐标: 未设置"
+                    android:textColor="#00CEC9"
+                    android:textSize="10sp"
+                    android:layout_marginTop="2dp"
+                    android:maxLines="1"
+                    android:ellipsize="end" />
             </LinearLayout>
         </LinearLayout>
 

@@ -83,10 +83,23 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
 
         // 恢复上次选择的目标游戏，并刷新坐标状态
         val prefs = application.getSharedPreferences(PREFS_NAME, Application.MODE_PRIVATE)
-        val savedPkg = prefs.getString(KEY_SELECTED_APP, null)
+        val savedPkg = prefs.getString(KEY_SELECTED_APP, null)?.let { SupportedApps.normalizePackage(it) }
         if (!savedPkg.isNullOrBlank()) {
+            if (savedPkg != prefs.getString(KEY_SELECTED_APP, null)) {
+                prefs.edit().putString(KEY_SELECTED_APP, savedPkg).apply()
+            }
             _uiState.value = _uiState.value.copy(selectedAppPackage = savedPkg)
             refreshCoordinateStatus(savedPkg)
+        }
+
+        // 悬浮播放窗关闭时：停止并清除当前曲目（音乐不得在无悬浮窗时继续播）
+        com.example.magicpinao.core.accessibility.FloatingPlayerService.onPlayerClosed = {
+            performanceScheduler.stop()
+            _uiState.value = _uiState.value.copy(
+                isPlaying = false,
+                currentMusicId = null,
+                currentMusicTitle = null
+            )
         }
 
         // 同步悬浮播放器 / 调度器状态到主界面
@@ -125,12 +138,42 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
             return
         }
         viewModelScope.launch {
-            val entity = coordinateRepository.getCoordinateByPackage(packageName)
+            val pkg = SupportedApps.normalizePackage(packageName)
+            val entity = coordinateRepository.getCoordinateByPackage(pkg)
             val valid = entity != null && coordinateRepository.isCoordinateEntityValid(entity)
+            val appName = SupportedApps.findByPackage(pkg)?.appName
+            val scheme = when {
+                !valid -> null
+                !entity?.schemeName.isNullOrBlank() -> entity!!.schemeName
+                appName != null -> "$appName-${entity?.keyCount ?: 21}键"
+                else -> "坐标已就绪"
+            }
             _uiState.value = _uiState.value.copy(
                 hasCoordinates = valid,
-                coordinateSchemeName = if (valid) entity?.schemeName?.ifBlank { null } else null
+                coordinateSchemeName = scheme
             )
+        }
+    }
+
+    /** 重置当前游戏的音符坐标并重新进入标定 */
+    fun resetCoordinatesAndCalibrate() {
+        val pkg = _uiState.value.selectedAppPackage ?: return
+        viewModelScope.launch {
+            val entity = coordinateRepository.getCoordinateByPackage(pkg)
+            if (entity != null) {
+                coordinateRepository.deleteCoordinate(entity)
+            }
+            // 同时清掉旧原神包名下的坐标
+            if (pkg == "com.PA.GenshinPiano") {
+                coordinateRepository.getCoordinateByPackage("com.miHoYo.GenshinImpact")?.let {
+                    coordinateRepository.deleteCoordinate(it)
+                }
+            }
+            _uiState.value = _uiState.value.copy(
+                hasCoordinates = false,
+                coordinateSchemeName = null
+            )
+            startCalibration(pkg)
         }
     }
 
@@ -358,7 +401,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     fun playCloudMusic(music: MusicItem) {
         viewModelScope.launch {
             try {
-                val packageName = _uiState.value.selectedAppPackage
+                val packageName = _uiState.value.selectedAppPackage?.let { SupportedApps.normalizePackage(it) }
 
                 if (packageName.isNullOrBlank()) {
                     _uiState.value = _uiState.value.copy(
@@ -402,11 +445,16 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                     currentMusicTitle = music.name,
                     errorMessage = null,
                     hasCoordinates = true,
-                    coordinateSchemeName = coordEntity.schemeName.ifBlank { null }
+                    coordinateSchemeName = coordEntity.schemeName.ifBlank {
+                        val name = SupportedApps.findByPackage(packageName)?.appName ?: "坐标"
+                        "$name-${coordEntity.keyCount}键"
+                    },
+                    selectedAppPackage = SupportedApps.normalizePackage(packageName)
                 )
 
+                // 必须弹出悬浮窗
                 com.example.magicpinao.core.accessibility.FloatingPlayerService.start(
-                    app, packageName, music.name, "cloud_${music.id}", autoPlay = true
+                    app, SupportedApps.normalizePackage(packageName), music.name, "cloud_${music.id}", autoPlay = true
                 )
                 Log.d("MainViewModel", "Delegated cloud playback to FloatingPlayer: ${music.name}")
             } catch (e: Exception) {
@@ -515,21 +563,22 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     // ========== 播放控制 ==========
 
     fun selectTargetApp(packageName: String) {
+        val pkg = SupportedApps.normalizePackage(packageName)
         getApplication<Application>()
             .getSharedPreferences(PREFS_NAME, Application.MODE_PRIVATE)
             .edit()
-            .putString(KEY_SELECTED_APP, packageName)
+            .putString(KEY_SELECTED_APP, pkg)
             .apply()
         _uiState.value = _uiState.value.copy(
-            selectedAppPackage = packageName,
+            selectedAppPackage = pkg,
             showAppSelector = false,
             showCalibrationPrompt = false,
-            calibratingAppPackage = packageName,
+            calibratingAppPackage = pkg,
             hasCoordinates = false,
             coordinateSchemeName = null
         )
-        // 选择原神/光遇/原神钢琴 = 重新设置该游戏的音符坐标
-        startCalibration(packageName)
+        // 选择游戏后进入标定（原神会提示打开 Genshin Piano）
+        startCalibration(pkg)
     }
 
     fun toggleAppSelector() {
@@ -549,15 +598,17 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         )
     }
 
-    /** 用户确认后：打开目标 App 并开始悬浮标定 */
+    /** 用户确认后：打开对应软件并开始悬浮标定 */
     fun confirmOpenTargetAppAndCalibrate() {
-        val pkg = _uiState.value.targetAppPromptPackage
-            ?: _uiState.value.calibratingAppPackage
-            ?: _uiState.value.selectedAppPackage
-            ?: return
+        val pkg = SupportedApps.normalizePackage(
+            _uiState.value.targetAppPromptPackage
+                ?: _uiState.value.calibratingAppPackage
+                ?: _uiState.value.selectedAppPackage
+                ?: return
+        )
+        val openPkg = SupportedApps.findByPackage(pkg)?.resolveOpenPackage() ?: pkg
         dismissTargetAppPrompt()
-        launchTargetApp(pkg)
-        // 稍后再启动标定服务（给目标 App 一点启动时间）
+        launchTargetApp(openPkg)
         viewModelScope.launch {
             kotlinx.coroutines.delay(800)
             startCalibrationService(pkg)
@@ -613,10 +664,13 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     }
 
     fun playMusic(musicId: String) {
-        val packageName = _uiState.value.selectedAppPackage
+        val packageName = _uiState.value.selectedAppPackage?.let { SupportedApps.normalizePackage(it) }
         if (packageName.isNullOrBlank()) {
             _uiState.value = _uiState.value.copy(showAppSelector = true, pendingMusicId = musicId)
             return
+        }
+        if (packageName != _uiState.value.selectedAppPackage) {
+            _uiState.value = _uiState.value.copy(selectedAppPackage = packageName)
         }
         playMusic(musicId, packageName)
     }
@@ -672,10 +726,12 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     }
 
     fun startCalibration(packageName: String = _uiState.value.selectedAppPackage ?: "") {
-        val pkg = packageName.ifBlank {
+        val raw = packageName.ifBlank {
             _uiState.value.selectedAppPackage ?: return
         }
+        val pkg = SupportedApps.normalizePackage(raw)
         val appInfo = SupportedApps.findByPackage(pkg) ?: SupportedApps.getDefault()
+        val openPkg = appInfo.resolveOpenPackage()
         if (!ensurePlayPermissions()) {
             _uiState.value = _uiState.value.copy(
                 calibratingAppPackage = pkg,
@@ -683,15 +739,15 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
             )
             return
         }
-        if (!isPackageInstalled(pkg)) {
+        if (!isPackageInstalled(openPkg)) {
             _uiState.value = _uiState.value.copy(
                 isCalibrating = false,
-                errorMessage = "未安装「${appInfo.appName}」，请先安装该应用后再设置音符坐标"
+                errorMessage = "未安装「${appInfo.resolveOpenLabel()}」，请先安装该应用后再设置音符坐标"
             )
             return
         }
-        // 未打开目标软件时，先弹窗明确提示用户
-        if (!isPackageForeground(pkg)) {
+        // 未打开对应软件时，先弹窗明确提示（原神 → 打开 Genshin Piano）
+        if (!isPackageForeground(openPkg)) {
             _uiState.value = _uiState.value.copy(
                 isCalibrating = false,
                 calibratingAppPackage = pkg,
@@ -705,18 +761,24 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     }
 
     private fun startCalibrationService(pkg: String) {
-        val appInfo = SupportedApps.findByPackage(pkg) ?: SupportedApps.getDefault()
+        val normalized = SupportedApps.normalizePackage(pkg)
+        val appInfo = SupportedApps.findByPackage(normalized) ?: SupportedApps.getDefault()
+        val openPkg = appInfo.resolveOpenPackage()
         _uiState.value = _uiState.value.copy(
             isCalibrating = true,
-            calibratingAppPackage = pkg,
+            calibratingAppPackage = normalized,
             showCalibrationPrompt = false,
             showTargetAppPrompt = false,
-            selectedAppPackage = pkg
+            selectedAppPackage = normalized
         )
+        getApplication<Application>()
+            .getSharedPreferences(PREFS_NAME, Application.MODE_PRIVATE)
+            .edit().putString(KEY_SELECTED_APP, normalized).apply()
         com.example.magicpinao.core.accessibility.FloatingPlayerService.stop(getApplication())
         performanceScheduler.stop()
+        // 标定服务打开/检测的是 openPackage（原神→Genshin Piano）
         com.example.magicpinao.core.accessibility.FloatingCalibrationService.start(
-            getApplication(), pkg, appInfo.keyCount, appInfo.layoutType, openTargetApp = true
+            getApplication(), openPkg, appInfo.keyCount, appInfo.layoutType, openTargetApp = true
         )
     }
 
@@ -772,10 +834,14 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                     currentMusicTitle = music.title,
                     errorMessage = null,
                     hasCoordinates = true,
-                    coordinateSchemeName = coordEntity.schemeName.ifBlank { null },
+                    coordinateSchemeName = coordEntity.schemeName.ifBlank {
+                        val app = SupportedApps.findByPackage(packageName)?.appName ?: "坐标"
+                        "$app-${coordEntity.keyCount}键"
+                    },
                     pendingMusicId = null
                 )
 
+                // 必须弹出悬浮窗；关闭悬浮窗会停播
                 com.example.magicpinao.core.accessibility.FloatingPlayerService.start(
                     getApplication(), packageName, music.title, musicId, autoPlay = true
                 )
@@ -788,13 +854,26 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     }
 
     fun pausePlayback() {
-        performanceScheduler.pause()
-        _uiState.value = _uiState.value.copy(isPlaying = false)
+        // 播放控制以悬浮窗为准；主界面仅转发
+        com.example.magicpinao.core.accessibility.FloatingPlayerService.instance?.let {
+            performanceScheduler.pause()
+            _uiState.value = _uiState.value.copy(isPlaying = false)
+        }
     }
 
     fun resumePlayback() {
-        performanceScheduler.resume()
-        _uiState.value = _uiState.value.copy(isPlaying = true)
+        val pkg = _uiState.value.selectedAppPackage ?: return
+        val title = _uiState.value.currentMusicTitle ?: ""
+        val id = _uiState.value.currentMusicId
+        // 悬浮窗必须打开才能继续播放
+        if (com.example.magicpinao.core.accessibility.FloatingPlayerService.instance == null) {
+            com.example.magicpinao.core.accessibility.FloatingPlayerService.start(
+                getApplication(), pkg, title, id, autoPlay = true
+            )
+        } else {
+            performanceScheduler.resume()
+            _uiState.value = _uiState.value.copy(isPlaying = true)
+        }
     }
 
     fun stopPlayback() {

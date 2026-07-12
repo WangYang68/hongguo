@@ -71,6 +71,9 @@ class FloatingPlayerService : Service(), PerformanceScheduler.PlaybackStateListe
         /** 目标应用包名（静态，跨实例保持） */
         var targetPackage: String? = null
 
+        /** 悬浮窗被用户关闭时回调（主界面清除播放状态） */
+        var onPlayerClosed: (() -> Unit)? = null
+
         fun start(
             context: Context,
             packageName: String,
@@ -165,6 +168,7 @@ class FloatingPlayerService : Service(), PerformanceScheduler.PlaybackStateListe
     // UI 引用
     private var tvMusicTitle: TextView? = null
     private var tvStatus: TextView? = null
+    private var tvCoordScheme: TextView? = null
     private var tvPlayingIcon: TextView? = null
     private var btnPauseResumeIcon: TextView? = null
     private var musicListPanel: LinearLayout? = null
@@ -231,9 +235,18 @@ class FloatingPlayerService : Service(), PerformanceScheduler.PlaybackStateListe
         scheduler.removeStateListener(this)
         stopAnimation()
         stopProgressUpdater()
+        // 关闭悬浮窗必须停止演奏
+        if (scheduler.isPlaying || scheduler.isPaused) {
+            scheduler.stop()
+        }
         removeFloatingView()
         instance = null
         scope.cancel()
+        try {
+            onPlayerClosed?.invoke()
+        } catch (e: Exception) {
+            Log.e(TAG, "onPlayerClosed error", e)
+        }
         Log.d(TAG, "FloatingPlayerService destroyed")
     }
 
@@ -358,6 +371,7 @@ class FloatingPlayerService : Service(), PerformanceScheduler.PlaybackStateListe
         // 缓存 UI 引用
         tvMusicTitle = floatingView?.findViewById(R.id.tvMusicTitle)
         tvStatus = floatingView?.findViewById(R.id.tvStatus)
+        tvCoordScheme = floatingView?.findViewById(R.id.tvCoordScheme)
         tvPlayingIcon = floatingView?.findViewById(R.id.tvPlayingIcon)
         btnPauseResumeIcon = floatingView?.findViewById(R.id.btnPauseResumeIcon)
         musicListPanel = floatingView?.findViewById<LinearLayout>(R.id.musicListPanel)
@@ -373,6 +387,9 @@ class FloatingPlayerService : Service(), PerformanceScheduler.PlaybackStateListe
         btnSpeed15 = floatingView?.findViewById(R.id.btnSpeed15)
         btnSpeed2 = floatingView?.findViewById(R.id.btnSpeed2)
 
+        // 显示当前音符坐标方案（原神 / 光遇 …）
+        refreshCoordinateLabel()
+
         // 拖动
         floatingView?.findViewById<LinearLayout>(R.id.dragHandle)?.setOnTouchListener { _, event ->
             handleDrag(event)
@@ -386,10 +403,11 @@ class FloatingPlayerService : Service(), PerformanceScheduler.PlaybackStateListe
             toggleCollapse()
         }
 
-        // 关闭
+        // 关闭 — 必须停播并销毁服务
         floatingView?.findViewById<TextView>(R.id.btnClose)?.setOnClickListener {
             stopPlayback()
             removeFloatingView()
+            stopForeground(STOP_FOREGROUND_REMOVE)
             stopSelf()
         }
 
@@ -837,16 +855,26 @@ class FloatingPlayerService : Service(), PerformanceScheduler.PlaybackStateListe
             return
         }
 
-        val pkg = currentPackageName.ifBlank { targetPackage ?: "" }
+        val pkg = SupportedApps.normalizePackage(
+            currentPackageName.ifBlank { targetPackage ?: "" }
+        )
         if (pkg.isBlank()) {
             Toast.makeText(this, "未设置目标应用", Toast.LENGTH_SHORT).show()
             return
         }
+        currentPackageName = pkg
+        targetPackage = pkg
 
         val unified = unifiedList[currentUnifiedIndex]
 
         scope.launch {
             try {
+                // 0. 播放前调用接口检查 VIP 是否过期
+                updateStatus("检查会员状态...")
+                if (!ensureVipNotExpired()) {
+                    return@launch
+                }
+
                 updateStatus("加载中...")
 
                 // 处理云端音乐：先下载
@@ -908,15 +936,28 @@ class FloatingPlayerService : Service(), PerformanceScheduler.PlaybackStateListe
                             Toast.LENGTH_LONG
                         ).show()
                         updateStatus("无坐标配置")
+                        tvCoordScheme?.text = "坐标: 未设置"
                         val appInfo = SupportedApps.findByPackage(pkg) ?: SupportedApps.getDefault()
                         FloatingCalibrationService.start(
-                            this@FloatingPlayerService, pkg, appInfo.keyCount, appInfo.layoutType, openTargetApp = true
+                            this@FloatingPlayerService,
+                            appInfo.resolveOpenPackage(),
+                            appInfo.keyCount,
+                            appInfo.layoutType,
+                            openTargetApp = true
                         )
                     }
                     return@launch
                 }
 
                 val app = SupportedApps.findByPackage(pkg) ?: SupportedApps.getDefault()
+                val openPkg = app.resolveOpenPackage()
+                val schemeLabel = coordEntity.schemeName.ifBlank {
+                    "${app.appName}-${coordEntity.keyCount}键"
+                }
+                withContext(Dispatchers.Main) {
+                    tvCoordScheme?.text = "坐标: $schemeLabel"
+                }
+
                 val coordList: List<PianoKeyCoordinate> = gson.fromJson(
                     coordEntity.keyCoordinates,
                     Array<PianoKeyCoordinate>::class.java
@@ -936,19 +977,21 @@ class FloatingPlayerService : Service(), PerformanceScheduler.PlaybackStateListe
                 // 4. 设置坐标到无障碍服务
                 service.setCoordinates(coordList)
 
-                // 5. 确保目标应用在前台（如果已在则跳过等待）
+                // 5. 确保对应软件在前台（原神 → 打开 Genshin Piano）
                 val root = service.rootInActiveWindow
                 val fgPkg = root?.packageName?.toString()
                 root?.recycle()
-                if (fgPkg != pkg) {
-                    service.openTargetApp(pkg)
-                    withContext(Dispatchers.Main) { updateStatus("正在打开 ${app.appName}...") }
-                    kotlinx.coroutines.delay(1500) // 等待应用切换
+                if (fgPkg != openPkg) {
+                    service.openTargetApp(openPkg)
+                    withContext(Dispatchers.Main) {
+                        updateStatus("正在打开 ${app.resolveOpenLabel()}...")
+                    }
+                    kotlinx.coroutines.delay(1500)
                 } else {
                     withContext(Dispatchers.Main) { updateStatus("准备演奏...") }
-                    kotlinx.coroutines.delay(300) // 短暂等待确保焦点
+                    kotlinx.coroutines.delay(300)
                 }
-                Log.d(TAG, "Foreground: $fgPkg")
+                Log.d(TAG, "Foreground: $fgPkg → need $openPkg")
 
                 // 6. 调度并开始演奏 — 优先使用标定方案的 layoutType
                 scheduler.setCoordinateManager(coordinateManager)
@@ -971,6 +1014,7 @@ class FloatingPlayerService : Service(), PerformanceScheduler.PlaybackStateListe
                 startAnimation()
                 startProgressUpdater()
                 updateStatus("正在演奏: ${unified.title}")
+                tvCoordScheme?.text = "坐标: $schemeLabel"
 
                 Log.d(TAG, "=== Playback started: ${unified.title} layout=$lt keys=$keyCount ===")
 
@@ -979,6 +1023,84 @@ class FloatingPlayerService : Service(), PerformanceScheduler.PlaybackStateListe
                 withContext(Dispatchers.Main) {
                     Toast.makeText(this@FloatingPlayerService, "播放失败: ${e.message}", Toast.LENGTH_LONG).show()
                     updateStatus("播放失败")
+                }
+            }
+        }
+    }
+
+    /** 播放前调用 VIP 过期接口 */
+    private suspend fun ensureVipNotExpired(): Boolean {
+        val token = com.example.magicpinao.core.auth.AuthManager.token ?: ""
+        if (token.isBlank()) {
+            withContext(Dispatchers.Main) {
+                Toast.makeText(this@FloatingPlayerService, "请先登录后再播放", Toast.LENGTH_LONG).show()
+                updateStatus("未登录")
+            }
+            return false
+        }
+        return try {
+            val result = withContext(Dispatchers.IO) {
+                com.example.magicpinao.core.network.ApiRepository().checkVipExpire(token)
+            }
+            result.fold(
+                onSuccess = { valid ->
+                    if (valid) return@fold true
+                    val createdAt = com.example.magicpinao.core.auth.AuthManager.createdAt
+                    if (createdAt.isNotBlank()) {
+                        try {
+                            val fmt = java.text.SimpleDateFormat("yyyy-MM-dd HH:mm:ss", java.util.Locale.getDefault())
+                            val dt = fmt.parse(createdAt)
+                            if (dt != null) {
+                                val trialEnd = java.util.Date(dt.time + 10 * 60 * 1000)
+                                if (java.util.Date().before(trialEnd)) return@fold true
+                            }
+                        } catch (_: Exception) { }
+                    }
+                    withContext(Dispatchers.Main) {
+                        Toast.makeText(this@FloatingPlayerService, "使用时长已到期，请回主界面激活 VIP", Toast.LENGTH_LONG).show()
+                        updateStatus("VIP已过期")
+                    }
+                    false
+                },
+                onFailure = { e ->
+                    withContext(Dispatchers.Main) {
+                        Toast.makeText(this@FloatingPlayerService, "会员检查失败: ${e.message}", Toast.LENGTH_LONG).show()
+                        updateStatus("会员检查失败")
+                    }
+                    false
+                }
+            )
+        } catch (e: Exception) {
+            withContext(Dispatchers.Main) {
+                Toast.makeText(this@FloatingPlayerService, "会员检查失败: ${e.message}", Toast.LENGTH_LONG).show()
+                updateStatus("会员检查失败")
+            }
+            false
+        }
+    }
+
+    private fun refreshCoordinateLabel() {
+        val pkg = SupportedApps.normalizePackage(
+            currentPackageName.ifBlank { targetPackage ?: "" }
+        )
+        if (pkg.isBlank()) {
+            tvCoordScheme?.text = "坐标: 未选择游戏"
+            return
+        }
+        scope.launch {
+            val entity = withContext(Dispatchers.IO) {
+                coordinateRepository.getCoordinateByPackage(pkg)
+            }
+            val app = SupportedApps.findByPackage(pkg)
+            withContext(Dispatchers.Main) {
+                when {
+                    entity != null && coordinateRepository.isCoordinateEntityValid(entity) -> {
+                        val label = entity.schemeName.ifBlank {
+                            "${app?.appName ?: "未知"}-${entity.keyCount}键"
+                        }
+                        tvCoordScheme?.text = "坐标: $label"
+                    }
+                    else -> tvCoordScheme?.text = "坐标: 未设置（${app?.appName ?: pkg}）"
                 }
             }
         }
@@ -1212,7 +1334,9 @@ class FloatingPlayerService : Service(), PerformanceScheduler.PlaybackStateListe
                 marginStart = dpToPx(4)
             }
             setOnClickListener {
-                val pkg = currentPackageName.ifBlank { targetPackage ?: "" }
+                val pkg = SupportedApps.normalizePackage(
+                    currentPackageName.ifBlank { targetPackage ?: "" }
+                )
                 if (pkg.isBlank()) {
                     Toast.makeText(this@FloatingPlayerService, "未设置目标应用", Toast.LENGTH_SHORT).show()
                     return@setOnClickListener
@@ -1220,9 +1344,17 @@ class FloatingPlayerService : Service(), PerformanceScheduler.PlaybackStateListe
                 stopPlayback()
                 val app = SupportedApps.findByPackage(pkg) ?: SupportedApps.getDefault()
                 FloatingCalibrationService.start(
-                    this@FloatingPlayerService, pkg, app.keyCount, app.layoutType, openTargetApp = true
+                    this@FloatingPlayerService,
+                    app.resolveOpenPackage(),
+                    app.keyCount,
+                    app.layoutType,
+                    openTargetApp = true
                 )
-                Toast.makeText(this@FloatingPlayerService, "进入坐标标定", Toast.LENGTH_SHORT).show()
+                Toast.makeText(
+                    this@FloatingPlayerService,
+                    "请打开「${app.resolveOpenLabel()}」后标定坐标",
+                    Toast.LENGTH_SHORT
+                ).show()
             }
         }
         // 插在列表按钮后面
