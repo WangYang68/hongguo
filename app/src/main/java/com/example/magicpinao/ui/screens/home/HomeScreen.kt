@@ -3,6 +3,7 @@ package com.example.magicpinao.ui.screens.home
 import androidx.compose.animation.*
 import androidx.compose.animation.core.*
 import androidx.compose.foundation.background
+import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
@@ -17,13 +18,13 @@ import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
-import androidx.compose.foundation.border
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.draw.shadow
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.layout.ContentScale
+import androidx.compose.ui.platform.LocalConfiguration
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
@@ -1054,26 +1055,45 @@ private fun AppSelectorDialog(
     onAppSelected: (com.example.magicpinao.core.accessibility.TargetApp) -> Unit,
     onDismiss: () -> Unit
 ) {
+    val maxH = (LocalConfiguration.current.screenHeightDp * 0.78f).dp
     AlertDialog(
         onDismissRequest = onDismiss,
         title = { Text("选择键位方案", color = TextPrimary) },
         text = {
-            Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                Text(
-                    "按游戏钢琴键位选择 21键 / 15键 / 36键。只需标定过对应键位坐标即可播放，无需检测游戏是否打开。",
-                    color = TextHint,
-                    style = MaterialTheme.typography.bodySmall
-                )
-                apps.forEach { app ->
+            LazyColumn(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .heightIn(max = maxH),
+                verticalArrangement = Arrangement.spacedBy(8.dp)
+            ) {
+                item {
+                    Text(
+                        "按游戏钢琴键位选择 15 / 21 / 22 / 36 / 37 键。只需标定过对应键位坐标即可播放。下滑可查看全部方案。",
+                        color = TextHint,
+                        style = MaterialTheme.typography.bodySmall
+                    )
+                    Spacer(Modifier.height(8.dp))
+                }
+                items(apps, key = { it.packageName }) { app ->
                     Surface(
                         onClick = { onAppSelected(app) },
                         shape = RoundedCornerShape(12.dp),
                         color = SurfaceLight,
                         modifier = Modifier.fillMaxWidth()
                     ) {
-                        Row(modifier = Modifier.padding(16.dp), verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(12.dp)) {
-                            Box(modifier = Modifier.size(40.dp).clip(CircleShape).background(Brush.linearGradient(listOf(PrimaryPurple, SecondaryCyan))), contentAlignment = Alignment.Center) {
-                                Text("🎵", fontSize = 20.sp)
+                        Row(
+                            modifier = Modifier.padding(horizontal = 12.dp, vertical = 10.dp),
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.spacedBy(12.dp)
+                        ) {
+                            Box(
+                                modifier = Modifier
+                                    .size(36.dp)
+                                    .clip(CircleShape)
+                                    .background(Brush.linearGradient(listOf(PrimaryPurple, SecondaryCyan))),
+                                contentAlignment = Alignment.Center
+                            ) {
+                                Text("🎵", fontSize = 16.sp)
                             }
                             Column(modifier = Modifier.weight(1f)) {
                                 Text(app.appName, style = MaterialTheme.typography.titleSmall, color = TextPrimary, fontWeight = FontWeight.Bold)

@@ -1172,17 +1172,14 @@ class FloatingPlayerService : Service(), PerformanceScheduler.PlaybackStateListe
             }
             result.fold(
                 onSuccess = { valid ->
-                    if (valid) return@fold true
-                    val createdAt = com.example.magicpinao.core.auth.AuthManager.createdAt
-                    if (createdAt.isNotBlank()) {
-                        try {
-                            val fmt = java.text.SimpleDateFormat("yyyy-MM-dd HH:mm:ss", java.util.Locale.getDefault())
-                            val dt = fmt.parse(createdAt)
-                            if (dt != null) {
-                                val trialEnd = java.util.Date(dt.time + 10 * 60 * 1000)
-                                if (java.util.Date().before(trialEnd)) return@fold true
-                            }
-                        } catch (_: Exception) { }
+                    if (com.example.magicpinao.core.auth.VipValidity.isAllowed(
+                            serverVipValid = valid,
+                            createdAt = com.example.magicpinao.core.auth.AuthManager.createdAt,
+                            cachedStatus = com.example.magicpinao.core.auth.AuthManager.vipStatus
+                        )
+                    ) {
+                        if (valid) com.example.magicpinao.core.auth.AuthManager.updateVipStatus("2")
+                        return@fold true
                     }
                     withContext(Dispatchers.Main) {
                         Toast.makeText(this@FloatingPlayerService, "使用时长已到期，请回主界面激活 VIP", Toast.LENGTH_LONG).show()

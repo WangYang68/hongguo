@@ -46,13 +46,13 @@ import android.util.Log
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.automirrored.filled.KeyboardArrowRight
 import com.example.magicpinao.core.auth.AuthManager
+import com.example.magicpinao.core.auth.VipValidity
+import com.example.magicpinao.core.network.ApiRepository
 import com.example.magicpinao.core.network.VipRecord
 import com.example.magicpinao.core.utils.EmailSender
 import com.example.magicpinao.ui.screens.auth.textFieldColors
 import com.example.magicpinao.ui.theme.*
 import kotlinx.coroutines.launch
-import java.text.SimpleDateFormat
-import java.util.*
 import java.io.File
 import java.io.FileOutputStream
 
@@ -76,7 +76,27 @@ fun ProfileScreen(
 
     // 用户信息
     val userInfo = AuthManager.userInfo
-    val isVipValid = userInfo?.status == "2"
+    var serverVipValid by remember { mutableStateOf<Boolean?>(null) }
+    LaunchedEffect(Unit) {
+        val token = AuthManager.token
+        if (!token.isNullOrBlank()) {
+            ApiRepository().checkVipExpire(token).fold(
+                onSuccess = { serverVipValid = it },
+                onFailure = { serverVipValid = null }
+            )
+        }
+        loadVipRecords()
+    }
+    val (trialEndStr, isInTrial) = remember(userInfo?.createdAt) {
+        calculateTrialInfo(userInfo?.createdAt ?: "")
+    }
+    val hasValidRecord = vipRecords.any { !VipValidity.isExpirePassed(it.expireAt) }
+    val isVipValid = VipValidity.isAllowed(
+        serverVipValid = serverVipValid,
+        createdAt = userInfo?.createdAt,
+        expireAts = vipRecords.map { it.expireAt },
+        cachedStatus = userInfo?.status
+    )
 
     // 头像选择
     var selectedImageUri by remember { mutableStateOf<Uri?>(null) }
@@ -139,11 +159,6 @@ fun ProfileScreen(
                 }
             }
         }
-    }
-
-    // 加载VIP记录
-    LaunchedEffect(Unit) {
-        loadVipRecords()
     }
 
     // 处理系统返回键
@@ -275,7 +290,8 @@ fun ProfileScreen(
                         color = if (isVipValid) SuccessGreen.copy(alpha = 0.15f) else ErrorRed.copy(alpha = 0.15f)
                     ) {
                         Text(
-                            text = if (isVipValid) "✨ VIP 会员" else "⚠ VIP 已过期",
+                            text = if (isInTrial && !hasValidRecord && serverVipValid != true)
+                                "✨ 试用中" else if (isVipValid) "✨ VIP 会员" else "⚠ VIP 已过期",
                             modifier = Modifier.padding(horizontal = 16.dp, vertical = 4.dp),
                             color = if (isVipValid) SuccessGreen else ErrorRed,
                             style = MaterialTheme.typography.labelMedium.copy(fontWeight = FontWeight.Bold)
@@ -303,11 +319,8 @@ fun ProfileScreen(
 
                     // 注册时间 + 试用期（合成一行）
                     val createdAt = userInfo?.createdAt ?: ""
-                    val (trialInfo, isInTrial) = remember(createdAt) {
-                        calculateTrialInfo(createdAt)
-                    }
-                    val regLine = if (isInTrial && trialInfo.isNotBlank()) {
-                        "📅 注册时间: $createdAt  -赠送vip过期时间: $trialInfo"
+                    val regLine = if (isInTrial && trialEndStr.isNotBlank()) {
+                        "📅 注册时间: $createdAt  -赠送vip过期时间: $trialEndStr"
                     } else {
                         "📅 注册时间: ${createdAt.ifBlank { "-" }}"
                     }
@@ -345,9 +358,14 @@ fun ProfileScreen(
                         modifier = Modifier.padding(vertical = 6.dp)
                     )
 
-                    // VIP状态
-                    val statusText = if (userInfo?.status == "2") "✨ VIP有效" else "⚠ VIP已过期"
-                    val statusColor = if (userInfo?.status == "2") SuccessGreen else ErrorRed
+                    // VIP状态：服务器有效 / 试用期内 / 未过期激活记录，任一即可
+                    val statusText = when {
+                        isInTrial && !hasValidRecord && serverVipValid != true ->
+                            "✨ 试用中（至 $trialEndStr）"
+                        isVipValid -> "✨ VIP有效"
+                        else -> "⚠ VIP已过期"
+                    }
+                    val statusColor = if (isVipValid) SuccessGreen else ErrorRed
                     Text(
                         text = statusText,
                         color = statusColor,
@@ -425,7 +443,7 @@ fun ProfileScreen(
 
                         // 记录行
                         vipRecords.forEachIndexed { index, record ->
-                            val isExpired = isVipExpired(record.expireAt)
+                            val isExpired = VipValidity.isExpirePassed(record.expireAt)
                             Row(
                                 modifier = Modifier
                                     .fillMaxWidth()
@@ -585,6 +603,7 @@ fun ProfileScreen(
                                 onSuccess = { msg ->
                                     activateMessage = msg
                                     AuthManager.updateVipStatus("2")
+                                    serverVipValid = true
                                     loadVipRecords()
                                 },
                                 onFailure = { e ->
@@ -840,36 +859,6 @@ private fun ProfileInfoRow(label: String, value: String, valueColor: Color = Tex
  */
 private fun calculateTrialInfo(createdAt: String): Pair<String, Boolean> {
     if (createdAt.isBlank()) return "" to false
-    return try {
-        val sdf = SimpleDateFormat("yyyy-MM-dd HH:mm:ss", Locale.getDefault())
-        val regTime = sdf.parse(createdAt) ?: return "" to false
-        val trialEnd = Date(regTime.time + 10 * 60 * 1000) // +10分钟
-        val now = Date()
-        val trialEndStr = sdf.format(trialEnd)
-        trialEndStr to (now.before(trialEnd))
-    } catch (e: Exception) {
-        "" to false
-    }
-}
-
-/**
- * 判断VIP记录是否已过期
- */
-private fun isVipExpired(expireAt: String): Boolean {
-    if (expireAt.isBlank()) return true
-    return try {
-        val sdf = SimpleDateFormat("yyyy-MM-dd HH:mm:ss", Locale.getDefault())
-        val expireTime = sdf.parse(expireAt) ?: return true
-        Date().after(expireTime)
-    } catch (e: Exception) {
-        // 如果解析失败，尝试只用日期部分判断
-        try {
-            val dateOnly = expireAt.take(10)
-            val sdf2 = SimpleDateFormat("yyyy-MM-dd", Locale.getDefault())
-            val expireDate = sdf2.parse(dateOnly) ?: return true
-            Date().after(Date(expireDate.time + 24 * 60 * 60 * 1000)) // 当天23:59:59之后算过期
-        } catch (e2: Exception) {
-            true
-        }
-    }
+    val trialEnd = VipValidity.trialEnd(createdAt) ?: return "" to false
+    return VipValidity.format(trialEnd) to VipValidity.isInTrial(createdAt)
 }

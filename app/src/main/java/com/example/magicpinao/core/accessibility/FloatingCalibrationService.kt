@@ -231,7 +231,6 @@ class FloatingCalibrationService : Service() {
                 Toast.LENGTH_LONG
             ).show()
             showTriggerButton()
-            mirrorTriggerViaAccessibility()
         }
     }
 
@@ -300,7 +299,13 @@ class FloatingCalibrationService : Service() {
         phase = Phase.TRIGGER
         initDefaultMarkers()
         removeTriggerButton()
-        createTriggerButton()
+        PianoAccessibilityService.instance?.hideCalibrationTrigger()
+        val acc = PianoAccessibilityService.instance
+        if (acc != null) {
+            mirrorTriggerViaAccessibility()
+        } else {
+            createTriggerButton()
+        }
         Toast.makeText(
             this,
             "请打开游戏钢琴界面，点击「开始标定」对齐 ${layoutType.label}",

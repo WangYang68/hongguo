@@ -6,6 +6,7 @@ import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
 import com.example.magicpinao.core.accessibility.SupportedApps
 import com.example.magicpinao.core.auth.AuthManager
+import com.example.magicpinao.core.auth.VipValidity
 import com.example.magicpinao.core.coordinate.CoordinateManager
 import com.example.magicpinao.core.data.CoordinateRepository
 import com.example.magicpinao.core.data.MusicEntity
@@ -20,8 +21,6 @@ import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.launch
-import java.text.SimpleDateFormat
-import java.util.*
 
 /**
  * 主界面 ViewModel
@@ -36,7 +35,6 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     private val performanceScheduler = PerformanceScheduler.getOrCreate()
 
     private val apiRepository = ApiRepository()
-    private val dateFormat = SimpleDateFormat("yyyy-MM-dd HH:mm:ss", Locale.getDefault())
 
     // ===== UI 状态 =====
     private val _uiState = MutableStateFlow(MainUiState())
@@ -358,22 +356,18 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         val vipResult = apiRepository.checkVipExpire(token)
         return vipResult.fold(
             onSuccess = { vipValid ->
-                if (vipValid) return@fold true
-                // VIP无效，检查10分钟试用期
-                val createdAt = AuthManager.createdAt
-                if (createdAt.isNotBlank()) {
-                    try {
-                        val dt = dateFormat.parse(createdAt)
-                        if (dt != null) {
-                            val trialEnd = Date(dt.time + 10 * 60 * 1000)
-                            if (Date().before(trialEnd)) return@fold true
-                        }
-                    } catch (e: Exception) {
-                        Log.e("MainViewModel", "Parse date error", e)
-                    }
+                if (VipValidity.isAllowed(
+                        serverVipValid = vipValid,
+                        createdAt = AuthManager.createdAt,
+                        cachedStatus = AuthManager.vipStatus
+                    )
+                ) {
+                    if (vipValid) AuthManager.updateVipStatus("2")
+                    true
+                } else {
+                    _uiState.value = _uiState.value.copy(showVipExpired = true)
+                    false
                 }
-                _uiState.value = _uiState.value.copy(showVipExpired = true)
-                false
             },
             onFailure = { e ->
                 _uiState.value = _uiState.value.copy(
