@@ -140,11 +140,7 @@ class FloatingCalibrationService : Service() {
                 currentAppPackage = intent.getStringExtra(EXTRA_PACKAGE_NAME) ?: ""
                 totalKeys = intent.getIntExtra(EXTRA_KEY_COUNT, 21)
                 val lt = intent.getStringExtra(EXTRA_LAYOUT_TYPE) ?: "LAYOUT_21"
-                layoutType = try {
-                    PianoLayoutType.valueOf(lt)
-                } catch (_: Exception) {
-                    PianoLayoutType.LAYOUT_21
-                }
+                layoutType = PianoLayoutType.fromName(lt)
                 pianoLayout = PianoLayouts.getLayout(layoutType)
                 totalKeys = pianoLayout.keyCount
                 openTargetOnStart = intent.getBooleanExtra(EXTRA_OPEN_TARGET, true)
@@ -683,51 +679,73 @@ class FloatingCalibrationService : Service() {
         } ?: return
 
         layoutBtnRow?.let { panel.removeView(it) }
-        val row = LinearLayout(this).apply {
-            orientation = LinearLayout.HORIZONTAL
+        val wrap = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
             layoutParams = LinearLayout.LayoutParams(
                 LinearLayout.LayoutParams.MATCH_PARENT,
                 LinearLayout.LayoutParams.WRAP_CONTENT
             ).apply { bottomMargin = dp2px(8) }
         }
-        PianoLayoutType.entries.forEach { t ->
-            val btn = TextView(this).apply {
-                text = when (t) {
-                    PianoLayoutType.LAYOUT_21 -> "21键"
-                    PianoLayoutType.LAYOUT_15 -> "15键"
-                    PianoLayoutType.LAYOUT_36 -> "36横排"
-                    PianoLayoutType.LAYOUT_36_PIANO -> "36钢琴"
-                }
-                textSize = 11f
-                gravity = Gravity.CENTER
-                setPadding(dp2px(8), dp2px(4), dp2px(8), dp2px(4))
-                layoutParams = LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f)
-                setOnClickListener {
-                    layoutType = t
-                    pianoLayout = PianoLayouts.getLayout(t)
-                    totalKeys = pianoLayout.keyCount
-                    currentAppPackage = SupportedApps.layoutId(t)
-                    initDefaultMarkers()
-                    refreshOverlayMarkers()
-                    updateLayoutBtnStyles(row)
-                    startForegroundNotification()
-                    controlPanel?.findViewById<TextView>(R.id.tvProgressBadge)?.text = "${totalKeys}键"
-                    Toast.makeText(this@FloatingCalibrationService, "已切换: ${t.label}", Toast.LENGTH_SHORT).show()
-                }
+        PianoLayoutType.entries.toList().chunked(4).forEach { chunk ->
+            val row = LinearLayout(this).apply {
+                orientation = LinearLayout.HORIZONTAL
+                layoutParams = LinearLayout.LayoutParams(
+                    LinearLayout.LayoutParams.MATCH_PARENT,
+                    LinearLayout.LayoutParams.WRAP_CONTENT
+                ).apply { bottomMargin = dp2px(4) }
             }
-            row.addView(btn)
+            chunk.forEach { t ->
+                val btn = TextView(this).apply {
+                    text = t.shortLabel
+                    tag = t
+                    textSize = 10f
+                    gravity = Gravity.CENTER
+                    setPadding(dp2px(4), dp2px(4), dp2px(4), dp2px(4))
+                    layoutParams = LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f)
+                    setOnClickListener {
+                        layoutType = t
+                        pianoLayout = PianoLayouts.getLayout(t)
+                        totalKeys = pianoLayout.keyCount
+                        currentAppPackage = SupportedApps.layoutId(t)
+                        initDefaultMarkers()
+                        refreshOverlayMarkers()
+                        updateLayoutBtnStyles(wrap)
+                        startForegroundNotification()
+                        controlPanel?.findViewById<TextView>(R.id.tvProgressBadge)?.text = "${totalKeys}键"
+                        Toast.makeText(this@FloatingCalibrationService, "已切换: ${t.label}", Toast.LENGTH_SHORT).show()
+                        updatePanelText()
+                    }
+                }
+                row.addView(btn)
+            }
+            repeat(4 - chunk.size) {
+                row.addView(View(this).apply {
+                    layoutParams = LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f)
+                })
+            }
+            wrap.addView(row)
         }
-        panel.addView(row, stepIdx + 1)
-        layoutBtnRow = row
-        updateLayoutBtnStyles(row)
+        panel.addView(wrap, stepIdx + 1)
+        layoutBtnRow = wrap
+        updateLayoutBtnStyles(wrap)
     }
 
     private fun updateLayoutBtnStyles(row: LinearLayout) {
-        for (i in 0 until row.childCount) {
-            val btn = row.getChildAt(i) as? TextView ?: continue
-            val active = PianoLayoutType.entries.getOrNull(i) == layoutType
+        fun styleBtn(btn: TextView) {
+            val t = btn.tag as? PianoLayoutType
+            val active = t == layoutType
             btn.setBackgroundResource(if (active) R.drawable.btn_speed_active_bg else R.drawable.btn_speed_bg)
             btn.setTextColor(if (active) 0xFFFFFFFF.toInt() else 0x80FFFFFF.toInt())
+        }
+        for (i in 0 until row.childCount) {
+            when (val child = row.getChildAt(i)) {
+                is TextView -> styleBtn(child)
+                is LinearLayout -> {
+                    for (j in 0 until child.childCount) {
+                        (child.getChildAt(j) as? TextView)?.let { styleBtn(it) }
+                    }
+                }
+            }
         }
     }
 
@@ -851,19 +869,19 @@ class FloatingCalibrationService : Service() {
     private fun initDefaultMarkers() {
         markers.clear()
         val dm = resources.displayMetrics
-        val kt = dm.heightPixels * 0.32f
+        val kt = dm.heightPixels * 0.38f
         val kb = dm.heightPixels * 0.88f
-        val kl = dm.widthPixels * 0.08f
-        val kr = dm.widthPixels * 0.92f
+        val kl = dm.widthPixels * 0.06f
+        val kr = dm.widthPixels * 0.94f
         val keys = pianoLayout.getOrderedKeys()
-        val colsPerRow = if (layoutType == PianoLayoutType.LAYOUT_36_PIANO) 7f
-            else (keys.size / pianoLayout.rows).coerceAtLeast(1).toFloat()
         val rh = (kb - kt) / pianoLayout.rows
         val blackLift = rh * 0.28f
         keys.forEachIndexed { i, k ->
+            val rowKeys = pianoLayout.getRowKeys(k.row)
+            val cols = (rowKeys.maxOfOrNull { it.visualCol } ?: 0f) + 1f
             val yBase = kb - rh * (k.row + 0.5f)
-            val y = if (k.isBlack) yBase - blackLift else yBase
-            val x = kl + (kr - kl) * ((k.visualCol + 0.5f) / colsPerRow)
+            val y = if (pianoLayout.staggerBlackKeys && k.isBlack) yBase - blackLift else yBase
+            val x = kl + (kr - kl) * ((k.visualCol + 0.5f) / cols)
             markers.add(KeyMarker(i, x, y, k.label))
         }
     }

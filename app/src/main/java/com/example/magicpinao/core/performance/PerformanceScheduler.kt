@@ -111,10 +111,21 @@ class PerformanceScheduler {
         if (isPlaying || isPaused) stop()
         currentPackageName = packageName
 
+        val keyChanges = sequence.events.filterIsInstance<com.example.magicpinao.core.midi.KeySignatureEvent>()
+            .sortedBy { it.timestamp }
+        var keyIdx = 0
+        var keyOffset = 0
+
         val events = sequence.events
             .filterIsInstance<NoteOnEvent>()
             .mapNotNull { e ->
-                coordMgr.mapMidiNoteToKeyIndex(e.pitch, baseNote, keyCount, whiteKeysOnly, layoutType)?.let {
+                while (keyIdx < keyChanges.size && keyChanges[keyIdx].timestamp <= e.timestamp) {
+                    keyOffset = keyChanges[keyIdx].offset
+                    keyIdx++
+                }
+                coordMgr.mapMidiNoteToKeyIndex(
+                    e.pitch, baseNote, keyCount, whiteKeysOnly, layoutType, keyOffset
+                )?.let {
                     ScheduledEvent(e.timestamp, (e.timestamp / speed).toLong(), it, e.velocity)
                 }
             }

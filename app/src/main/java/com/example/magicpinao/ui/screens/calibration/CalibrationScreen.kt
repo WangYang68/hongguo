@@ -12,7 +12,6 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Brush
-import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
@@ -21,7 +20,6 @@ import com.example.magicpinao.core.accessibility.FloatingCalibrationService
 import com.example.magicpinao.core.accessibility.SupportedApps
 import com.example.magicpinao.core.accessibility.TargetApp
 import com.example.magicpinao.core.calibration.PianoLayoutType
-import com.example.magicpinao.core.calibration.PianoLayouts
 import com.example.magicpinao.core.data.CoordinateRepository
 import com.example.magicpinao.ui.theme.*
 import kotlinx.coroutines.Dispatchers
@@ -35,7 +33,6 @@ import kotlinx.coroutines.withContext
 @Composable
 fun CalibrationScreen(onBackClick: () -> Unit) {
     val context = LocalContext.current
-    var selectedLayout by remember { mutableStateOf(PianoLayoutType.LAYOUT_21) }
     var schemesCount by remember { mutableStateOf<Map<String, Int>>(emptyMap()) }
 
     LaunchedEffect(Unit) {
@@ -80,59 +77,14 @@ fun CalibrationScreen(onBackClick: () -> Unit) {
             )
             Spacer(Modifier.height(8.dp))
             Text(
-                "1. 选择键位方案（21键 / 15键 / 36键横排 / 36键钢琴式）\n" +
+                "1. 选择键位方案（15 / 21 / 22 / 36 / 37）\n" +
                     "2. 手动打开游戏钢琴界面\n" +
-                    "3. 点击「开始标定」悬浮按钮\n" +
+                    "3. 点击方案卡片启动悬浮标定\n" +
                     "4. 拖动外框对齐全部琴键，必要时微调单个标记后点「完成」",
                 color = TextHint,
                 fontSize = 13.sp,
                 lineHeight = 20.sp
             )
-
-            Spacer(Modifier.height(20.dp))
-            Text(
-                "选择钢琴布局",
-                style = MaterialTheme.typography.titleMedium,
-                color = TextPrimary,
-                fontWeight = FontWeight.Bold
-            )
-            Spacer(Modifier.height(8.dp))
-            Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                PianoLayoutType.entries.forEach { lt ->
-                    val sel = lt == selectedLayout
-                    Card(
-                        Modifier
-                            .weight(1f)
-                            .clickable { selectedLayout = lt },
-                        shape = RoundedCornerShape(12.dp),
-                        colors = CardDefaults.cardColors(
-                            containerColor = if (sel) PrimaryPurple else SurfaceDark
-                        ),
-                        border = if (sel) BorderStroke(2.dp, PrimaryPurpleLight) else null
-                    ) {
-                        Column(
-                            Modifier.padding(10.dp),
-                            horizontalAlignment = Alignment.CenterHorizontally
-                        ) {
-                            Text(
-                                when (lt) {
-                                    PianoLayoutType.LAYOUT_21 -> "21键"
-                                    PianoLayoutType.LAYOUT_15 -> "15键"
-                                    PianoLayoutType.LAYOUT_36 -> "36横排"
-                                    PianoLayoutType.LAYOUT_36_PIANO -> "36钢琴"
-                                },
-                                color = if (sel) Color.White else TextPrimary,
-                                fontWeight = FontWeight.Bold
-                            )
-                            Text(
-                                lt.label,
-                                fontSize = 11.sp,
-                                color = if (sel) Color.White.copy(alpha = 0.7f) else TextHint
-                            )
-                        }
-                    }
-                }
-            }
 
             Spacer(Modifier.height(20.dp))
             Text(
@@ -144,7 +96,7 @@ fun CalibrationScreen(onBackClick: () -> Unit) {
             Spacer(Modifier.height(8.dp))
             SupportedApps.apps.forEach { app ->
                 val cnt = schemesCount[app.packageName] ?: 0
-                val layout = PianoLayouts.getLayout(selectedLayout)
+                val lt = PianoLayoutType.fromName(app.layoutType)
                 AppCalibrateCard(
                     app = app,
                     schemeCount = cnt,
@@ -152,13 +104,13 @@ fun CalibrationScreen(onBackClick: () -> Unit) {
                         FloatingCalibrationService.start(
                             context,
                             app.packageName,
-                            layout.keyCount,
-                            selectedLayout.name,
+                            app.keyCount,
+                            lt.name,
                             openTargetApp = false
                         )
                         Toast.makeText(
                             context,
-                            "已启动标定：请打开游戏钢琴界面后点击「开始标定」对齐 ${selectedLayout.label}",
+                            "已启动标定：请打开游戏钢琴界面后点击「开始标定」对齐 ${lt.label}",
                             Toast.LENGTH_LONG
                         ).show()
                         onBackClick()

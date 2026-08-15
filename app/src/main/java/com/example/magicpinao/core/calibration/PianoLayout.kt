@@ -1,39 +1,41 @@
 package com.example.magicpinao.core.calibration
 
 /**
- * 钢琴键盘布局定义
+ * 钢琴/游戏键位布局。
  *
- * - LAYOUT_21: 3排×7白键，C3-B5
- * - LAYOUT_15: 光遇等同款 3排×5白键
- * - LAYOUT_36: 横排36键，3排×12半音（图2）
- * - LAYOUT_36_PIANO: 钢琴式36键，每排7白+5黑（图1）
+ * 无黑键（15/21/22）：转 C 调 + 半音降半音 + 越界升降八度。
+ * 有黑键（36/37）：不转调、不处理半音，仅越界升降八度。
  */
-enum class PianoLayoutType(val label: String, val keyCount: Int) {
-    LAYOUT_21("21键", 21),
-    LAYOUT_15("15键", 15),
-    LAYOUT_36("36键·横排", 36),
-    LAYOUT_36_PIANO("36键·钢琴式", 36);
+enum class PianoLayoutType(val label: String, val keyCount: Int, val shortLabel: String) {
+    LAYOUT_15("15键", 15, "15"),
+    LAYOUT_21("21键·下排低音", 21, "21"),
+    LAYOUT_21_GUITAR("21键·上排低音", 21, "21吉他"),
+    LAYOUT_22("22键", 22, "22"),
+    LAYOUT_36("36键·通用横排", 36, "36横"),
+    LAYOUT_36_SHAPED("36键·异形", 36, "36异"),
+    LAYOUT_37("37键·通用", 37, "37横"),
+    LAYOUT_37_SHAPED("37键·异形", 37, "37异");
 
     companion object {
         fun fromName(name: String?): PianoLayoutType {
-            return try {
-                valueOf(name ?: "")
-            } catch (_: Exception) {
-                LAYOUT_21
+            return when (name) {
+                "LAYOUT_36_PIANO" -> LAYOUT_36_SHAPED
+                else -> try {
+                    valueOf(name ?: "")
+                } catch (_: Exception) {
+                    LAYOUT_21
+                }
             }
         }
     }
 }
 
-/**
- * 单个琴键的布局定义
- */
 data class KeyPosition(
-    val row: Int,           // 0=下排(低音), 1=中排(中音), 2=上排(高音)
-    val col: Int,           // 逻辑列（保存/映射顺序）
-    val isBlack: Boolean,   // 是否是黑键
-    val midiNote: Int,      // MIDI 音符编号 (C4=60)
-    val label: String,      // 标定显示标签
+    val row: Int,           // 0=下排, 1=中排, 2=上排
+    val col: Int,
+    val isBlack: Boolean,
+    val midiNote: Int,
+    val label: String,
     val visualCol: Float = col.toFloat()
 )
 
@@ -43,135 +45,170 @@ data class PianoLayout(
     val rows: Int,
     val hasBlackKeys: Boolean,
     val keys: List<KeyPosition>,
-    val rowLabels: List<String>
+    val rowLabels: List<String>,
+    /** 黑键是否像钢琴那样抬高半排；横排 12 键时为 false */
+    val staggerBlackKeys: Boolean = false
 ) {
     fun getRowKeys(row: Int): List<KeyPosition> = keys.filter { it.row == row }
 
     fun getOrderedKeys(): List<KeyPosition> {
         return (0 until rows).flatMap { row ->
-            getRowKeys(row).sortedBy { it.midiNote }
+            getRowKeys(row).sortedBy { it.visualCol }
         }
     }
 }
 
 object PianoLayouts {
 
-    val LAYOUT_21 = PianoLayout(
-        type = PianoLayoutType.LAYOUT_21,
-        keyCount = 21,
-        rows = 3,
-        hasBlackKeys = false,
-        rowLabels = listOf("下排(低音) C3-B3", "中排(中音) C4-B4", "上排(高音) C5-B5"),
-        keys = buildList {
-            val whiteLabels = listOf("C", "D", "E", "F", "G", "A", "B")
-            for (row in 0..2) {
-                val octave = row + 3
-                whiteLabels.forEachIndexed { col, label ->
-                    val midiNote = octave * 12 + when (label) {
-                        "C" -> 0; "D" -> 2; "E" -> 4; "F" -> 5; "G" -> 7; "A" -> 9; "B" -> 11
-                        else -> 0
-                    }
-                    add(KeyPosition(row, col, false, midiNote, "$label$octave", col.toFloat()))
-                }
-            }
-        }
-    )
+    private val CHROMATIC_LABELS = listOf("1", "#1", "2", "b3", "3", "4", "#4", "5", "#5", "6", "b7", "7")
+    private val WHITE_LABELS = listOf("C", "D", "E", "F", "G", "A", "B")
+    private val WHITE_SEMI = intArrayOf(0, 2, 4, 5, 7, 9, 11)
 
-    /**
-     * 图2：每排 12 个半音键，均匀横排
-     * 1 #1 2 b3 3 4 #4 5 #5 6 b7 7 × 高/中/低音
-     */
-    val LAYOUT_36 = PianoLayout(
-        type = PianoLayoutType.LAYOUT_36,
-        keyCount = 36,
-        rows = 3,
-        hasBlackKeys = true,
-        rowLabels = listOf("低音 C3-B3", "中音 C4-B4", "高音 C5-B5"),
-        keys = buildList {
-            val labels = listOf("1", "#1", "2", "b3", "3", "4", "#4", "5", "#5", "6", "b7", "7")
-            val black = booleanArrayOf(false, true, false, true, false, false, true, false, true, false, true, false)
-            for (row in 0..2) {
-                val octave = row + 3
-                for (col in 0 until 12) {
-                    add(
-                        KeyPosition(
-                            row = row,
-                            col = col,
-                            isBlack = black[col],
-                            midiNote = octave * 12 + col,
-                            label = labels[col],
-                            visualCol = col.toFloat()
-                        )
-                    )
-                }
-            }
-        }
-    )
+    private fun whiteNote(octave: Int, whiteIdx: Int): Pair<Int, String> {
+        val midi = octave * 12 + WHITE_SEMI[whiteIdx]
+        return midi to "${WHITE_LABELS[whiteIdx]}$octave"
+    }
 
-    /**
-     * 图1：钢琴式 36 键
-     * 每排 7 个白键 + 上方 5 个黑键（1 2 空隙 4 5 6 的升号位）
-     */
-    val LAYOUT_36_PIANO = PianoLayout(
-        type = PianoLayoutType.LAYOUT_36_PIANO,
-        keyCount = 36,
-        rows = 3,
-        hasBlackKeys = true,
-        rowLabels = listOf("低音", "中音", "高音"),
-        keys = buildList {
-            val white = listOf(
-                0 to "1", 2 to "2", 4 to "3", 5 to "4", 7 to "5", 9 to "6", 11 to "7"
-            )
-            val black = listOf(
-                1 to ("#1" to 0.5f),
-                3 to ("#2" to 1.5f),
-                6 to ("#4" to 3.5f),
-                8 to ("#5" to 4.5f),
-                10 to ("#6" to 5.5f)
-            )
-            for (row in 0..2) {
-                val octave = row + 3
-                white.forEachIndexed { col, (semi, label) ->
-                    add(KeyPosition(row, col, false, octave * 12 + semi, label, col.toFloat()))
-                }
-                black.forEach { (semi, pair) ->
-                    add(KeyPosition(row, 7, true, octave * 12 + semi, pair.first, pair.second))
-                }
-            }
+    private fun addWhiteOctave(target: MutableList<KeyPosition>, row: Int, octave: Int, extraCNext: Boolean = false) {
+        WHITE_LABELS.forEachIndexed { col, _ ->
+            val (midi, label) = whiteNote(octave, col)
+            target.add(KeyPosition(row, col, false, midi, label, col.toFloat()))
         }
-    )
+        if (extraCNext) {
+            val midi = (octave + 1) * 12
+            target.add(KeyPosition(row, 7, false, midi, "C${octave + 1}", 7f))
+        }
+    }
 
+    private fun addChromaticOctave(
+        target: MutableList<KeyPosition>,
+        row: Int,
+        octave: Int,
+        throughCNext: Boolean = false
+    ) {
+        val count = if (throughCNext) 13 else 12
+        for (col in 0 until count) {
+            val midi = octave * 12 + col
+            val label = if (col == 12) "1'" else CHROMATIC_LABELS[col]
+            target.add(KeyPosition(row, col, col % 12 in listOf(1, 3, 6, 8, 10), midi, label, col.toFloat()))
+        }
+    }
+
+    /** 15键：光遇、和平精英。上 C4-G4 / 中 A4-E5 / 下 F5-C6 */
     val LAYOUT_15 = PianoLayout(
         type = PianoLayoutType.LAYOUT_15,
         keyCount = 15,
         rows = 3,
         hasBlackKeys = false,
-        rowLabels = listOf("下排 F4-C5", "中排 A3-E4", "上排 C3-G3"),
+        rowLabels = listOf("下排 F5-C6", "中排 A4-E5", "上排 C4-G4"),
         keys = buildList {
-            listOf(48 to "C3", 50 to "D3", 52 to "E3", 53 to "F3", 55 to "G3").forEachIndexed { col, (midi, label) ->
-                add(KeyPosition(2, col, false, midi, label, col.toFloat()))
+            listOf(60 to "C4", 62 to "D4", 64 to "E4", 65 to "F4", 67 to "G4").forEachIndexed { col, (m, l) ->
+                add(KeyPosition(2, col, false, m, l, col.toFloat()))
             }
-            listOf(57 to "A3", 59 to "B3", 60 to "C4", 62 to "D4", 64 to "E4").forEachIndexed { col, (midi, label) ->
-                add(KeyPosition(1, col, false, midi, label, col.toFloat()))
+            listOf(69 to "A4", 71 to "B4", 72 to "C5", 74 to "D5", 76 to "E5").forEachIndexed { col, (m, l) ->
+                add(KeyPosition(1, col, false, m, l, col.toFloat()))
             }
-            listOf(65 to "F4", 67 to "G4", 69 to "A4", 71 to "B4", 72 to "C5").forEachIndexed { col, (midi, label) ->
-                add(KeyPosition(0, col, false, midi, label, col.toFloat()))
+            listOf(77 to "F5", 79 to "G5", 81 to "A5", 83 to "B5", 84 to "C6").forEachIndexed { col, (m, l) ->
+                add(KeyPosition(0, col, false, m, l, col.toFloat()))
             }
         }
     )
 
+    /** 21键：原神等，下排低音。上 C5-B5 / 中 C4-B4 / 下 C3-B3 */
+    val LAYOUT_21 = PianoLayout(
+        type = PianoLayoutType.LAYOUT_21,
+        keyCount = 21,
+        rows = 3,
+        hasBlackKeys = false,
+        rowLabels = listOf("下排 C3-B3", "中排 C4-B4", "上排 C5-B5"),
+        keys = buildList {
+            addWhiteOctave(this, 0, 3)
+            addWhiteOctave(this, 1, 4)
+            addWhiteOctave(this, 2, 5)
+        }
+    )
+
+    /** 21键吉他类：上排低音。上 C3-B3 / 中 C5-B5 / 下 C4-B4 */
+    val LAYOUT_21_GUITAR = PianoLayout(
+        type = PianoLayoutType.LAYOUT_21_GUITAR,
+        keyCount = 21,
+        rows = 3,
+        hasBlackKeys = false,
+        rowLabels = listOf("下排 C4-B4", "中排 C5-B5", "上排 C3-B3"),
+        keys = buildList {
+            addWhiteOctave(this, 0, 4)
+            addWhiteOctave(this, 1, 5)
+            addWhiteOctave(this, 2, 3)
+        }
+    )
+
+    /** 22键：七日世界吉他。上 C5-C6(8) / 中 C4-B4 / 下 C3-B3 */
+    val LAYOUT_22 = PianoLayout(
+        type = PianoLayoutType.LAYOUT_22,
+        keyCount = 22,
+        rows = 3,
+        hasBlackKeys = false,
+        rowLabels = listOf("下排 C3-B3", "中排 C4-B4", "上排 C5-C6"),
+        keys = buildList {
+            addWhiteOctave(this, 0, 3)
+            addWhiteOctave(this, 1, 4)
+            addWhiteOctave(this, 2, 5, extraCNext = true)
+        }
+    )
+
+    private fun linear36(type: PianoLayoutType, labelPrefix: String) = PianoLayout(
+        type = type,
+        keyCount = 36,
+        rows = 3,
+        hasBlackKeys = true,
+        staggerBlackKeys = false,
+        rowLabels = listOf("$labelPrefix 低音 C3-B3", "中音 C4-B4", "高音 C5-B5"),
+        keys = buildList {
+            addChromaticOctave(this, 0, 3)
+            addChromaticOctave(this, 1, 4)
+            addChromaticOctave(this, 2, 5)
+        }
+    )
+
+    private fun linear37(type: PianoLayoutType, labelPrefix: String) = PianoLayout(
+        type = type,
+        keyCount = 37,
+        rows = 3,
+        hasBlackKeys = true,
+        staggerBlackKeys = false,
+        rowLabels = listOf("$labelPrefix 低音 C3-B3", "中音 C4-B4", "高音 C5-C6"),
+        keys = buildList {
+            addChromaticOctave(this, 0, 3)
+            addChromaticOctave(this, 1, 4)
+            addChromaticOctave(this, 2, 5, throughCNext = true)
+        }
+    )
+
+    val LAYOUT_36 = linear36(PianoLayoutType.LAYOUT_36, "通用36")
+    val LAYOUT_36_SHAPED = linear36(PianoLayoutType.LAYOUT_36_SHAPED, "异形36")
+    val LAYOUT_37 = linear37(PianoLayoutType.LAYOUT_37, "通用37")
+    val LAYOUT_37_SHAPED = linear37(PianoLayoutType.LAYOUT_37_SHAPED, "异形37")
+
     fun getLayout(type: PianoLayoutType): PianoLayout = when (type) {
-        PianoLayoutType.LAYOUT_21 -> LAYOUT_21
         PianoLayoutType.LAYOUT_15 -> LAYOUT_15
+        PianoLayoutType.LAYOUT_21 -> LAYOUT_21
+        PianoLayoutType.LAYOUT_21_GUITAR -> LAYOUT_21_GUITAR
+        PianoLayoutType.LAYOUT_22 -> LAYOUT_22
         PianoLayoutType.LAYOUT_36 -> LAYOUT_36
-        PianoLayoutType.LAYOUT_36_PIANO -> LAYOUT_36_PIANO
+        PianoLayoutType.LAYOUT_36_SHAPED -> LAYOUT_36_SHAPED
+        PianoLayoutType.LAYOUT_37 -> LAYOUT_37
+        PianoLayoutType.LAYOUT_37_SHAPED -> LAYOUT_37_SHAPED
     }
 
     fun inferLayout(keyCount: Int, appName: String): PianoLayout {
         return when {
-            appName.contains("钢琴式") || appName.contains("piano", ignoreCase = true) && keyCount == 36 -> LAYOUT_36_PIANO
+            keyCount == 15 -> LAYOUT_15
+            keyCount == 22 -> LAYOUT_22
+            keyCount == 37 && appName.contains("异") -> LAYOUT_37_SHAPED
+            keyCount == 37 -> LAYOUT_37
+            keyCount >= 36 && appName.contains("异") -> LAYOUT_36_SHAPED
             keyCount >= 36 -> LAYOUT_36
-            appName.contains("光遇", ignoreCase = true) || keyCount == 15 -> LAYOUT_15
+            appName.contains("吉他") -> LAYOUT_21_GUITAR
             else -> LAYOUT_21
         }
     }

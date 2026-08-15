@@ -56,12 +56,14 @@ class CoordinateRepository(private val context: Context) {
         }
         val keyCount = when (layoutType) {
             "LAYOUT_15" -> 15
-            "LAYOUT_36", "LAYOUT_36_PIANO" -> 36
-            "LAYOUT_21" -> 21
+            "LAYOUT_22" -> 22
+            "LAYOUT_36", "LAYOUT_36_PIANO", "LAYOUT_36_SHAPED" -> 36
+            "LAYOUT_37", "LAYOUT_37_SHAPED" -> 37
+            "LAYOUT_21", "LAYOUT_21_GUITAR" -> 21
             else -> null
         }
-        // 仅 21/15 允许按键数兜底；两种 36 键不能混用
-        if (keyCount != null && keyCount != 36) {
+        // 仅 15 键允许按键数兜底；21/22 吉他与 36/37 布局不能混用
+        if (keyCount == 15) {
             return coordinateDao.getCoordinateByKeyCount(keyCount)
         }
         return null

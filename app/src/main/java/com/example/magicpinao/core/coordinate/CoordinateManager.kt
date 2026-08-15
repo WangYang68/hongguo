@@ -173,10 +173,11 @@ class CoordinateManager {
         baseNote: Int = 60,
         keyCount: Int = 21,
         whiteKeysOnly: Boolean = false,
-        layoutType: com.example.magicpinao.core.calibration.PianoLayoutType = com.example.magicpinao.core.calibration.PianoLayoutType.LAYOUT_21
+        layoutType: com.example.magicpinao.core.calibration.PianoLayoutType = com.example.magicpinao.core.calibration.PianoLayoutType.LAYOUT_21,
+        keyOffset: Int = 0
     ): Int? {
         val layout = com.example.magicpinao.core.calibration.PianoLayouts.getLayout(layoutType)
-        return com.example.magicpinao.core.calibration.Transposer.mapNoteToKey(midiNote, layout)
+        return com.example.magicpinao.core.calibration.Transposer.mapNoteToKey(midiNote, layout, keyOffset)
     }
     
     /**

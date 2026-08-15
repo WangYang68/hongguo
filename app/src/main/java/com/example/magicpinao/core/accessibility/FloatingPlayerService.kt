@@ -31,14 +31,18 @@ import com.example.magicpinao.core.data.MusicEntity
 import com.example.magicpinao.core.data.MusicRepository
 import com.example.magicpinao.core.data.PianoKeyCoordinate
 import com.example.magicpinao.core.midi.MidiParser
+import com.example.magicpinao.core.auth.AuthManager
+import com.example.magicpinao.core.network.ApiRepository
 import com.example.magicpinao.core.network.CloudMusicCache
 import com.example.magicpinao.core.network.MusicItem
 import com.example.magicpinao.core.performance.PerformanceScheduler
 import com.google.gson.Gson
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.Job
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancel
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
@@ -142,6 +146,8 @@ class FloatingPlayerService : Service(), PerformanceScheduler.PlaybackStateListe
     private var currentUnifiedIndex: Int = -1
     private var musicListAdapter: ArrayAdapter<String>? = null
     private var searchQuery = ""
+    private var cloudSearchJob: Job? = null
+    private val apiRepository = ApiRepository()
 
     // 过滤模式按钮引用
     private var btnFilterAll: TextView? = null
@@ -455,6 +461,13 @@ class FloatingPlayerService : Service(), PerformanceScheduler.PlaybackStateListe
             override fun afterTextChanged(s: android.text.Editable?) {
                 searchQuery = s?.toString() ?: ""
                 applySearchFilter()
+                if (filterMode != FilterMode.LOCAL) {
+                    cloudSearchJob?.cancel()
+                    cloudSearchJob = scope.launch {
+                        delay(400)
+                        fetchCloudList(replace = true, fromUserSearch = true)
+                    }
+                }
             }
             override fun beforeTextChanged(s: CharSequence?, start: Int, count: Int, after: Int) {}
             override fun onTextChanged(s: CharSequence?, start: Int, before: Int, count: Int) {}
@@ -557,9 +570,7 @@ class FloatingPlayerService : Service(), PerformanceScheduler.PlaybackStateListe
                     musicRepository.getAllMusic().first()
                 }
                 fullMusicList = allMusic
-                // 同时加载云端音乐缓存
-                cloudMusicItems = CloudMusicCache.getAll()
-                Log.d(TAG, "Loaded ${fullMusicList.size} local + ${cloudMusicItems.size} cloud music items")
+                Log.d(TAG, "Loaded ${fullMusicList.size} local music items")
 
                 if (fullMusicList.isEmpty()) {
                     updateStatus("正在扫描MIDI文件...")
@@ -588,6 +599,13 @@ class FloatingPlayerService : Service(), PerformanceScheduler.PlaybackStateListe
                         fullMusicList = musicRepository.getAllMusic().first()
                     }
                     Log.d(TAG, "After scan: ${fullMusicList.size} music items")
+                }
+
+                // 悬浮窗自己拉云端列表，不依赖主界面「云音乐」页是否已打开
+                if (CloudMusicCache.size == 0) {
+                    fetchCloudList(replace = true, fromUserSearch = false)
+                } else {
+                    cloudMusicItems = CloudMusicCache.getAll()
                 }
 
                 // 找到当前音乐索引
@@ -660,6 +678,23 @@ class FloatingPlayerService : Service(), PerformanceScheduler.PlaybackStateListe
         return list
     }
 
+    private fun relocateCurrentUnified() {
+        if (currentUnifiedIndex in unifiedList.indices) {
+            val cur = unifiedList[currentUnifiedIndex]
+            if (currentMusicId.isNullOrBlank() || cur.id == currentMusicId || cur.title == currentMusicTitle) return
+        }
+        if (!currentMusicId.isNullOrBlank()) {
+            currentUnifiedIndex = unifiedList.indexOfFirst {
+                it.id == currentMusicId || it.id == "local_$currentMusicId" ||
+                    it.id.removePrefix("local_") == currentMusicId ||
+                    it.id.removePrefix("cloud_") == currentMusicId
+            }
+        }
+        if (currentUnifiedIndex < 0 && currentMusicTitle.isNotBlank()) {
+            currentUnifiedIndex = unifiedList.indexOfFirst { it.title == currentMusicTitle }
+        }
+    }
+
     private fun applySearchFilter() {
         // 构建统一列表
         unifiedList = buildUnifiedList()
@@ -712,6 +747,8 @@ class FloatingPlayerService : Service(), PerformanceScheduler.PlaybackStateListe
         }
         musicListView?.adapter = musicListAdapter
 
+        relocateCurrentUnified()
+
         tvResultCount?.text = run {
             val totalHint = when (filterMode) {
                 FilterMode.CLOUD -> {
@@ -725,9 +762,11 @@ class FloatingPlayerService : Service(), PerformanceScheduler.PlaybackStateListe
         }
         tvEmptyMusic?.visibility = if (filteredUnifiedList.isEmpty()) View.VISIBLE else View.GONE
 
-        // 更新当前标题
+        // 更新当前标题：已选曲目不覆盖成「选择音乐 (N首)」
         if (currentUnifiedIndex >= 0 && currentUnifiedIndex < unifiedList.size) {
             currentMusicTitle = unifiedList[currentUnifiedIndex].title
+            tvMusicTitle?.text = currentMusicTitle
+        } else if (currentMusicTitle.isNotBlank() && currentMusicTitle != "选择音乐") {
             tvMusicTitle?.text = currentMusicTitle
         } else if (unifiedList.isNotEmpty()) {
             tvMusicTitle?.text = "选择音乐 (${unifiedList.size}首)"
@@ -735,46 +774,89 @@ class FloatingPlayerService : Service(), PerformanceScheduler.PlaybackStateListe
             tvMusicTitle?.text = "无音乐文件"
         }
 
-        updateStatus(if (unifiedList.isEmpty()) "请先加载音乐"
+        updateStatus(if (cloudMusicItems.isEmpty() && filterMode != FilterMode.LOCAL && CloudMusicCache.loading)
+            "正在从云端加载音乐…"
+            else if (unifiedList.isEmpty()) "请先加载音乐"
             else if (filterMode == FilterMode.CLOUD && CloudMusicCache.hasMore)
                 "云端 ${CloudMusicCache.size}/${maxOf(CloudMusicCache.serverTotal, CloudMusicCache.size)}，下滑加载更多"
             else if (filteredUnifiedList.size != unifiedList.size) "搜索: ${filteredUnifiedList.size}首"
             else "就绪 (本地${fullMusicList.size}+云端${cloudMusicItems.size})")
+        if (filteredUnifiedList.isEmpty() && filterMode != FilterMode.LOCAL && CloudMusicCache.loading) {
+            tvEmptyMusic?.text = "正在从云端加载音乐…"
+        } else if (filteredUnifiedList.isEmpty()) {
+            tvEmptyMusic?.text = "暂无音乐"
+        }
     }
 
-    private fun loadMoreCloudIfNeeded() {
+    private fun sameCloudSearch(): Boolean {
+        val q = searchQuery.ifBlank { null }
+        return q == CloudMusicCache.lastSearch || (q.isNullOrBlank() && CloudMusicCache.lastSearch.isNullOrBlank())
+    }
+
+    /**
+     * 悬浮窗独立请求 /api/musics。缓存为空、搜索词变化时替换首页；否则由下滑加载更多。
+     */
+    private fun fetchCloudList(replace: Boolean, fromUserSearch: Boolean) {
         if (filterMode == FilterMode.LOCAL) return
-        if (CloudMusicCache.loading || !CloudMusicCache.hasMore) return
+        if (CloudMusicCache.loading) return
+        val search = searchQuery.ifBlank { null }
+        if (!replace) {
+            if (!CloudMusicCache.hasMore) return
+        } else {
+            if (!fromUserSearch && CloudMusicCache.size > 0 && sameCloudSearch()) {
+                cloudMusicItems = CloudMusicCache.getAll()
+                applySearchFilter()
+                return
+            }
+            if (fromUserSearch && CloudMusicCache.size > 0 && sameCloudSearch()) return
+        }
         CloudMusicCache.loading = true
-        updateStatus("加载更多云音乐…")
+        if (replace && CloudMusicCache.size == 0) {
+            updateStatus("正在从云端加载音乐…")
+            tvEmptyMusic?.text = "正在从云端加载音乐…"
+            tvEmptyMusic?.visibility = View.VISIBLE
+        }
         scope.launch {
             try {
-                val token = com.example.magicpinao.core.auth.AuthManager.token ?: ""
-                val page = CloudMusicCache.nextPage
-                val result = com.example.magicpinao.core.network.ApiRepository().getMusicList(
+                val token = AuthManager.token ?: ""
+                val page = if (replace) 1 else CloudMusicCache.nextPage
+                val result = apiRepository.getMusicList(
                     token = token,
                     page = page,
                     size = CloudMusicCache.pageSize,
-                    search = searchQuery.ifBlank { CloudMusicCache.lastSearch }
+                    search = search
                 )
                 result.fold(
                     onSuccess = { data ->
-                        if (data.data.isEmpty()) {
+                        if (replace) {
+                            CloudMusicCache.set(data.data, data.total, search)
+                        } else if (data.data.isEmpty()) {
                             CloudMusicCache.markNoMore()
                         } else {
                             CloudMusicCache.addMore(data.data, data.total)
                         }
                         cloudMusicItems = CloudMusicCache.getAll()
+                        Log.d(TAG, "Cloud list: ${cloudMusicItems.size}/${CloudMusicCache.serverTotal} page=$page")
                         applySearchFilter()
                     },
                     onFailure = { e ->
-                        Log.e(TAG, "Load more cloud music failed", e)
+                        Log.e(TAG, "Fetch cloud music failed", e)
+                        cloudMusicItems = CloudMusicCache.getAll()
+                        applySearchFilter()
+                        if (CloudMusicCache.size == 0) {
+                            updateStatus("云端加载失败: ${e.message}")
+                        }
                     }
                 )
             } finally {
                 CloudMusicCache.loading = false
             }
         }
+    }
+
+    private fun loadMoreCloudIfNeeded() {
+        if (filterMode == FilterMode.LOCAL) return
+        fetchCloudList(replace = false, fromUserSearch = false)
     }
 
     private fun findCurrentInFiltered(): Int {
@@ -796,6 +878,9 @@ class FloatingPlayerService : Service(), PerformanceScheduler.PlaybackStateListe
         // 添加过滤模式按钮
         ensureFilterButtons()
         applySearchFilter()
+        if (filterMode != FilterMode.LOCAL && CloudMusicCache.size == 0) {
+            fetchCloudList(replace = true, fromUserSearch = false)
+        }
         val pos = findCurrentInFiltered()
         if (pos >= 0) musicListView?.setSelection(pos)
     }
@@ -834,6 +919,9 @@ class FloatingPlayerService : Service(), PerformanceScheduler.PlaybackStateListe
                     filterMode = mode
                     applySearchFilter()
                     updateFilterButtonStyles(filterBtns)
+                    if (mode != FilterMode.LOCAL && CloudMusicCache.size == 0) {
+                        fetchCloudList(replace = true, fromUserSearch = false)
+                    }
                 }
                 layoutParams = LinearLayout.LayoutParams(
                     0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f
@@ -1040,11 +1128,7 @@ class FloatingPlayerService : Service(), PerformanceScheduler.PlaybackStateListe
                 // 5. 调度并开始演奏 — 使用已保存的键位方案
                 scheduler.setCoordinateManager(coordinateManager)
                 val layoutTypeName = coordEntity.layoutType.ifBlank { app.layoutType }
-                val lt = try {
-                    com.example.magicpinao.core.calibration.PianoLayoutType.valueOf(layoutTypeName)
-                } catch (_: Exception) {
-                    com.example.magicpinao.core.calibration.PianoLayoutType.LAYOUT_21
-                }
+                val lt = com.example.magicpinao.core.calibration.PianoLayoutType.fromName(layoutTypeName)
                 val keyCount = coordEntity.keyCount.takeIf { it > 0 } ?: app.keyCount
                 scheduler.schedule(sequence, pkg, app.baseNote, keyCount, app.whiteKeysOnly, lt)
                 scheduler.start()

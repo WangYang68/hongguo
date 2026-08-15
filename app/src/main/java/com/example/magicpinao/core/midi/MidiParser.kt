@@ -106,6 +106,10 @@ class MidiParser {
                                 ((trackData[offset + 1].toInt() and 0xFF) shl 8) or
                                 (trackData[offset + 2].toInt() and 0xFF)
                         events.add(RawMidiEvent(absoluteTick, RawEventType.TEMPO, 0, microsPerBeat, 0))
+                    } else if (metaType == 0x59 && length >= 2 && offset + 1 < trackData.size) {
+                        val sf = trackData[offset].toInt() // 有符号：-7..7，但字节可能 0xFF=-1
+                        val sharps = if (sf > 127) sf - 256 else sf
+                        events.add(RawMidiEvent(absoluteTick, RawEventType.KEY_SIG, 0, sharps, 0))
                     }
                     offset += length
                 }
@@ -147,7 +151,12 @@ class MidiParser {
         val ticksPerBeat = division.coerceAtLeast(1).toDouble()
         // 同一 tick 先应用 tempo，再出音符
         val sorted = rawEvents.sortedWith(
-            compareBy<RawMidiEvent> { it.tick }.thenBy { if (it.type == RawEventType.TEMPO) 0 else 1 }
+            compareBy<RawMidiEvent> { it.tick }.thenBy {
+                when (it.type) {
+                    RawEventType.TEMPO, RawEventType.KEY_SIG -> 0
+                    else -> 1
+                }
+            }
         )
 
         var currentTempo = 500000.0 // 默认 120 BPM
@@ -163,6 +172,10 @@ class MidiParser {
             when (event.type) {
                 RawEventType.TEMPO -> {
                     if (event.pitch > 0) currentTempo = event.pitch.toDouble()
+                }
+                RawEventType.KEY_SIG -> {
+                    val offset = com.example.magicpinao.core.calibration.Transposer.keySignatureOffset(event.pitch)
+                    result.add(KeySignatureEvent(event.tick, lastMs.roundToLong(), event.pitch, offset))
                 }
                 RawEventType.NOTE_ON -> result.add(
                     NoteOnEvent(event.tick, lastMs.roundToLong(), event.channel, event.pitch, event.velocity)
@@ -190,6 +203,10 @@ class MidiParser {
                 RawEventType.NOTE_OFF -> result.add(
                     NoteOffEvent(event.tick, ms, event.channel, event.pitch, event.velocity)
                 )
+                RawEventType.KEY_SIG -> {
+                    val offset = com.example.magicpinao.core.calibration.Transposer.keySignatureOffset(event.pitch)
+                    result.add(KeySignatureEvent(event.tick, ms, event.pitch, offset))
+                }
                 else -> {}
             }
         }
@@ -240,7 +257,7 @@ class MidiParser {
     }
 }
 
-private enum class RawEventType { NOTE_ON, NOTE_OFF, TEMPO }
+private enum class RawEventType { NOTE_ON, NOTE_OFF, TEMPO, KEY_SIG }
 
 private data class RawMidiEvent(
     val tick: Long,

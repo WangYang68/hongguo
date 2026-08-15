@@ -48,3 +48,14 @@ data class TimeSignatureEvent(
     val numerator: Int,    // 分子（如4/4拍的4）
     val denominator: Int   // 分母（如4/4拍的4）
 ) : MidiEvent()
+
+/**
+ * 调号事件：用于 15/21/22 键把乐曲转到 C 调。
+ * offset = 主音相对 C 的半音数，演奏时 pitch -= offset。
+ */
+data class KeySignatureEvent(
+    override val tick: Long,
+    override val timestamp: Long,
+    val sharpsFlats: Int,
+    val offset: Int
+) : MidiEvent()
