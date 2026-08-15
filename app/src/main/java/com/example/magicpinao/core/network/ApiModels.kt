@@ -75,7 +75,9 @@ data class MusicItem(
  * 音乐列表响应
  */
 data class MusicListData(
+    @SerializedName(value = "total", alternate = ["Total", "count", "Count"])
     val total: Int = 0,
+    @SerializedName(value = "data", alternate = ["Data", "list", "List"])
     val data: List<MusicItem> = emptyList()
 )
 

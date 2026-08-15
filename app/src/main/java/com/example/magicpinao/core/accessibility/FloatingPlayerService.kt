@@ -467,6 +467,19 @@ class FloatingPlayerService : Service(), PerformanceScheduler.PlaybackStateListe
             requestOverlayFocus(false)
             startPlayback()
         }
+        musicListView?.setOnScrollListener(object : android.widget.AbsListView.OnScrollListener {
+            override fun onScrollStateChanged(view: android.widget.AbsListView?, scrollState: Int) {}
+            override fun onScroll(
+                view: android.widget.AbsListView?,
+                firstVisibleItem: Int,
+                visibleItemCount: Int,
+                totalItemCount: Int
+            ) {
+                if (totalItemCount > 0 && firstVisibleItem + visibleItemCount >= totalItemCount - 8) {
+                    loadMoreCloudIfNeeded()
+                }
+            }
+        })
 
         // 速度按钮
         btnSpeed05?.setOnClickListener { changeSpeed(0.5f) }
@@ -699,7 +712,17 @@ class FloatingPlayerService : Service(), PerformanceScheduler.PlaybackStateListe
         }
         musicListView?.adapter = musicListAdapter
 
-        tvResultCount?.text = "${filteredUnifiedList.size}/${unifiedList.size}"
+        tvResultCount?.text = run {
+            val totalHint = when (filterMode) {
+                FilterMode.CLOUD -> {
+                    val t = CloudMusicCache.serverTotal
+                    if (t > 0) t else CloudMusicCache.size
+                }
+                FilterMode.LOCAL -> fullMusicList.size
+                FilterMode.ALL -> fullMusicList.size + maxOf(CloudMusicCache.serverTotal, CloudMusicCache.size)
+            }
+            "${filteredUnifiedList.size}/$totalHint"
+        }
         tvEmptyMusic?.visibility = if (filteredUnifiedList.isEmpty()) View.VISIBLE else View.GONE
 
         // 更新当前标题
@@ -713,8 +736,45 @@ class FloatingPlayerService : Service(), PerformanceScheduler.PlaybackStateListe
         }
 
         updateStatus(if (unifiedList.isEmpty()) "请先加载音乐"
+            else if (filterMode == FilterMode.CLOUD && CloudMusicCache.hasMore)
+                "云端 ${CloudMusicCache.size}/${maxOf(CloudMusicCache.serverTotal, CloudMusicCache.size)}，下滑加载更多"
             else if (filteredUnifiedList.size != unifiedList.size) "搜索: ${filteredUnifiedList.size}首"
             else "就绪 (本地${fullMusicList.size}+云端${cloudMusicItems.size})")
+    }
+
+    private fun loadMoreCloudIfNeeded() {
+        if (filterMode == FilterMode.LOCAL) return
+        if (CloudMusicCache.loading || !CloudMusicCache.hasMore) return
+        CloudMusicCache.loading = true
+        updateStatus("加载更多云音乐…")
+        scope.launch {
+            try {
+                val token = com.example.magicpinao.core.auth.AuthManager.token ?: ""
+                val page = CloudMusicCache.nextPage
+                val result = com.example.magicpinao.core.network.ApiRepository().getMusicList(
+                    token = token,
+                    page = page,
+                    size = CloudMusicCache.pageSize,
+                    search = searchQuery.ifBlank { CloudMusicCache.lastSearch }
+                )
+                result.fold(
+                    onSuccess = { data ->
+                        if (data.data.isEmpty()) {
+                            CloudMusicCache.markNoMore()
+                        } else {
+                            CloudMusicCache.addMore(data.data, data.total)
+                        }
+                        cloudMusicItems = CloudMusicCache.getAll()
+                        applySearchFilter()
+                    },
+                    onFailure = { e ->
+                        Log.e(TAG, "Load more cloud music failed", e)
+                    }
+                )
+            } finally {
+                CloudMusicCache.loading = false
+            }
+        }
     }
 
     private fun findCurrentInFiltered(): Int {
@@ -940,17 +1000,16 @@ class FloatingPlayerService : Service(), PerformanceScheduler.PlaybackStateListe
                         val appInfo = SupportedApps.findByPackage(pkg) ?: SupportedApps.getDefault()
                         FloatingCalibrationService.start(
                             this@FloatingPlayerService,
-                            appInfo.resolveOpenPackage(),
+                            appInfo.packageName,
                             appInfo.keyCount,
                             appInfo.layoutType,
-                            openTargetApp = true
+                            openTargetApp = false
                         )
                     }
                     return@launch
                 }
 
                 val app = SupportedApps.findByPackage(pkg) ?: SupportedApps.getDefault()
-                val openPkg = app.resolveOpenPackage()
                 val schemeLabel = coordEntity.schemeName.ifBlank {
                     "${app.appName}-${coordEntity.keyCount}键"
                 }
@@ -976,24 +1035,9 @@ class FloatingPlayerService : Service(), PerformanceScheduler.PlaybackStateListe
 
                 // 4. 设置坐标到无障碍服务
                 service.setCoordinates(coordList)
+                withContext(Dispatchers.Main) { updateStatus("准备演奏...") }
 
-                // 5. 确保对应软件在前台（原神 → 打开 Genshin Piano）
-                val root = service.rootInActiveWindow
-                val fgPkg = root?.packageName?.toString()
-                root?.recycle()
-                if (fgPkg != openPkg) {
-                    service.openTargetApp(openPkg)
-                    withContext(Dispatchers.Main) {
-                        updateStatus("正在打开 ${app.resolveOpenLabel()}...")
-                    }
-                    kotlinx.coroutines.delay(1500)
-                } else {
-                    withContext(Dispatchers.Main) { updateStatus("准备演奏...") }
-                    kotlinx.coroutines.delay(300)
-                }
-                Log.d(TAG, "Foreground: $fgPkg → need $openPkg")
-
-                // 6. 调度并开始演奏 — 优先使用标定方案的 layoutType
+                // 5. 调度并开始演奏 — 使用已保存的键位方案
                 scheduler.setCoordinateManager(coordinateManager)
                 val layoutTypeName = coordEntity.layoutType.ifBlank { app.layoutType }
                 val lt = try {
@@ -1345,14 +1389,14 @@ class FloatingPlayerService : Service(), PerformanceScheduler.PlaybackStateListe
                 val app = SupportedApps.findByPackage(pkg) ?: SupportedApps.getDefault()
                 FloatingCalibrationService.start(
                     this@FloatingPlayerService,
-                    app.resolveOpenPackage(),
+                    app.packageName,
                     app.keyCount,
                     app.layoutType,
-                    openTargetApp = true
+                    openTargetApp = false
                 )
                 Toast.makeText(
                     this@FloatingPlayerService,
-                    "请打开「${app.resolveOpenLabel()}」后标定坐标",
+                    "请打开游戏钢琴界面后对齐「${app.appName}」坐标",
                     Toast.LENGTH_SHORT
                 ).show()
             }

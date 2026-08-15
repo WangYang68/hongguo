@@ -26,6 +26,12 @@ interface CoordinateDao {
      */
     @Query("SELECT * FROM coordinates WHERE packageName = :packageName ORDER BY updatedAt DESC LIMIT 1")
     suspend fun getCoordinateByPackage(packageName: String): CoordinateEntity?
+
+    @Query("SELECT * FROM coordinates WHERE layoutType = :layoutType ORDER BY updatedAt DESC LIMIT 1")
+    suspend fun getCoordinateByLayoutType(layoutType: String): CoordinateEntity?
+
+    @Query("SELECT * FROM coordinates WHERE keyCount = :keyCount ORDER BY updatedAt DESC LIMIT 1")
+    suspend fun getCoordinateByKeyCount(keyCount: Int): CoordinateEntity?
     
     /**
      * 获取所有坐标配置

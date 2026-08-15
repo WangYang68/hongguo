@@ -303,19 +303,24 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
             val result = apiRepository.getMusicList(
                 token = token,
                 page = cloudCurrentPage,
-                size = 10,
+                size = CloudMusicCache.pageSize,
                 search = _cloudSearchQuery.value.ifBlank { null }
             )
             result.fold(
                 onSuccess = { data ->
+                    val search = _cloudSearchQuery.value.ifBlank { null }
                     if (refresh || cloudCurrentPage == 1) {
                         _cloudMusicList.value = data.data
-                        CloudMusicCache.set(data.data)
+                        CloudMusicCache.set(data.data, data.total, search)
                     } else {
                         _cloudMusicList.value = _cloudMusicList.value + data.data
-                        CloudMusicCache.addMore(data.data)
+                        CloudMusicCache.addMore(data.data, data.total)
                     }
-                    cloudHasMore = data.data.size >= 10
+                    cloudHasMore = if (data.total > 0) {
+                        _cloudMusicList.value.size < data.total
+                    } else {
+                        data.data.size >= CloudMusicCache.pageSize
+                    }
                 },
                 onFailure = { e ->
                     Log.e("MainViewModel", "Load cloud music error", e)
@@ -326,8 +331,8 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     }
 
     fun loadMoreCloudMusic() {
-        if (!cloudHasMore || _isCloudLoading.value) return
-        cloudCurrentPage++
+        if (!cloudHasMore || _isCloudLoading.value || CloudMusicCache.loading) return
+        cloudCurrentPage = CloudMusicCache.nextPage
         loadCloudMusic()
     }
 
@@ -573,12 +578,19 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
             selectedAppPackage = pkg,
             showAppSelector = false,
             showCalibrationPrompt = false,
-            calibratingAppPackage = pkg,
-            hasCoordinates = false,
-            coordinateSchemeName = null
+            calibratingAppPackage = pkg
         )
-        // 选择游戏后进入标定（原神会提示打开 Genshin Piano）
-        startCalibration(pkg)
+        viewModelScope.launch {
+            refreshCoordinateStatus(pkg)
+            val entity = coordinateRepository.getCoordinateByPackage(pkg)
+            val valid = entity != null && coordinateRepository.isCoordinateEntityValid(entity)
+            if (!valid) {
+                _uiState.value = _uiState.value.copy(
+                    showCalibrationPrompt = true,
+                    calibratingAppPackage = pkg
+                )
+            }
+        }
     }
 
     fun toggleAppSelector() {
@@ -598,7 +610,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         )
     }
 
-    /** 用户确认后：打开对应软件并开始悬浮标定 */
+    /** 兼容旧 UI：直接进入标定，不再要求打开某款游戏 */
     fun confirmOpenTargetAppAndCalibrate() {
         val pkg = SupportedApps.normalizePackage(
             _uiState.value.targetAppPromptPackage
@@ -606,13 +618,8 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                 ?: _uiState.value.selectedAppPackage
                 ?: return
         )
-        val openPkg = SupportedApps.findByPackage(pkg)?.resolveOpenPackage() ?: pkg
         dismissTargetAppPrompt()
-        launchTargetApp(openPkg)
-        viewModelScope.launch {
-            kotlinx.coroutines.delay(800)
-            startCalibrationService(pkg)
-        }
+        startCalibrationService(pkg)
     }
 
     fun dismissPermissionDialog() {
@@ -730,30 +737,10 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
             _uiState.value.selectedAppPackage ?: return
         }
         val pkg = SupportedApps.normalizePackage(raw)
-        val appInfo = SupportedApps.findByPackage(pkg) ?: SupportedApps.getDefault()
-        val openPkg = appInfo.resolveOpenPackage()
         if (!ensurePlayPermissions()) {
             _uiState.value = _uiState.value.copy(
                 calibratingAppPackage = pkg,
                 isCalibrating = false
-            )
-            return
-        }
-        if (!isPackageInstalled(openPkg)) {
-            _uiState.value = _uiState.value.copy(
-                isCalibrating = false,
-                errorMessage = "未安装「${appInfo.resolveOpenLabel()}」，请先安装该应用后再设置音符坐标"
-            )
-            return
-        }
-        // 未打开对应软件时，先弹窗明确提示（原神 → 打开 Genshin Piano）
-        if (!isPackageForeground(openPkg)) {
-            _uiState.value = _uiState.value.copy(
-                isCalibrating = false,
-                calibratingAppPackage = pkg,
-                showTargetAppPrompt = true,
-                targetAppPromptPackage = pkg,
-                errorMessage = null
             )
             return
         }
@@ -763,7 +750,6 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     private fun startCalibrationService(pkg: String) {
         val normalized = SupportedApps.normalizePackage(pkg)
         val appInfo = SupportedApps.findByPackage(normalized) ?: SupportedApps.getDefault()
-        val openPkg = appInfo.resolveOpenPackage()
         _uiState.value = _uiState.value.copy(
             isCalibrating = true,
             calibratingAppPackage = normalized,
@@ -776,9 +762,12 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
             .edit().putString(KEY_SELECTED_APP, normalized).apply()
         com.example.magicpinao.core.accessibility.FloatingPlayerService.stop(getApplication())
         performanceScheduler.stop()
-        // 标定服务打开/检测的是 openPackage（原神→Genshin Piano）
         com.example.magicpinao.core.accessibility.FloatingCalibrationService.start(
-            getApplication(), openPkg, appInfo.keyCount, appInfo.layoutType, openTargetApp = true
+            getApplication(),
+            normalized,
+            appInfo.keyCount,
+            appInfo.layoutType,
+            openTargetApp = false
         )
     }
 

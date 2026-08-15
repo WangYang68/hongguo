@@ -1,5 +1,11 @@
 package com.example.magicpinao.core.accessibility
 
+import com.example.magicpinao.core.calibration.PianoLayoutType
+
+/**
+ * 演奏/标定用的键位方案（不再绑定具体游戏包名）。
+ * packageName 作为坐标存储键，实际为 layout.xxx。
+ */
 data class TargetApp(
     val packageName: String,
     val appName: String,
@@ -7,105 +13,76 @@ data class TargetApp(
     val baseNote: Int = 60,
     val description: String = "",
     val whiteKeysOnly: Boolean = false,
-    val rowCount: Int = 1,
-    val layoutType: String = "LAYOUT_21",
-    /**
-     * 标定/播放时实际需要打开并检测前台的包名。
-     * 例如「原神」21键对应独立 App Genshin Piano，而不是原神本体。
-     */
-    val openPackageName: String = packageName,
-    /** 提示用户打开的软件名称 */
-    val openAppLabel: String = appName
-) {
-    fun resolveOpenPackage(): String = openPackageName.ifBlank { packageName }
-    fun resolveOpenLabel(): String = openAppLabel.ifBlank { appName }
-}
+    val rowCount: Int = 3,
+    val layoutType: String = "LAYOUT_21"
+)
 
 object SupportedApps {
 
     val apps = listOf(
         TargetApp(
-            packageName = "com.PA.GenshinPiano",
-            appName = "原神",
+            packageName = "layout.LAYOUT_21",
+            appName = "21键",
             keyCount = 21, baseNote = 48,
-            description = "请打开 Genshin Piano · 21键",
-            whiteKeysOnly = true, rowCount = 3,
-            layoutType = "LAYOUT_21",
-            openPackageName = "com.PA.GenshinPiano",
-            openAppLabel = "原神钢琴(Genshin Piano)"
+            description = "3排×7白键，适用于原神风物琴等同款界面",
+            whiteKeysOnly = true,
+            layoutType = "LAYOUT_21"
         ),
         TargetApp(
-            packageName = "com.sky.xlzq",
-            appName = "光遇",
-            keyCount = 15, baseNote = 60,
-            description = "请打开光遇 · 15键",
-            whiteKeysOnly = true, rowCount = 3,
-            layoutType = "LAYOUT_15",
-            openAppLabel = "光遇"
+            packageName = "layout.LAYOUT_15",
+            appName = "15键",
+            keyCount = 15, baseNote = 48,
+            description = "3排×5白键，适用于光遇等同款界面",
+            whiteKeysOnly = true,
+            layoutType = "LAYOUT_15"
         ),
         TargetApp(
-            packageName = "com.tgc.sky.android",
-            appName = "光遇(国际)",
-            keyCount = 15, baseNote = 60,
-            description = "请打开 Sky 国际服 · 15键",
-            whiteKeysOnly = true, rowCount = 3,
-            layoutType = "LAYOUT_15",
-            openAppLabel = "光遇(国际)"
+            packageName = "layout.LAYOUT_36",
+            appName = "36键·横排",
+            keyCount = 36, baseNote = 48,
+            description = "3排×12半音横排（图2）",
+            whiteKeysOnly = false,
+            layoutType = "LAYOUT_36"
         ),
         TargetApp(
-            packageName = "com.netease.sky",
-            appName = "光遇(网易)",
-            keyCount = 15, baseNote = 60,
-            description = "请打开光遇(网易) · 15键",
-            whiteKeysOnly = true, rowCount = 3,
-            layoutType = "LAYOUT_15",
-            openAppLabel = "光遇(网易)"
-        ),
-        TargetApp(
-            packageName = "com.any.piano",
-            appName = "通用钢琴",
-            keyCount = 21, baseNote = 60,
-            description = "请打开对应钢琴 App · 21键",
-            whiteKeysOnly = true, rowCount = 3,
-            layoutType = "LAYOUT_21",
-            openAppLabel = "通用钢琴"
+            packageName = "layout.LAYOUT_36_PIANO",
+            appName = "36键·钢琴式",
+            keyCount = 36, baseNote = 48,
+            description = "每排7白键+5黑键（图1）",
+            whiteKeysOnly = false,
+            layoutType = "LAYOUT_36_PIANO"
         )
     )
 
-    /** 旧版「原神」曾用原神本体包名存坐标，这里做兼容映射 */
+    /** 旧游戏包名 → 键位方案 */
     private val packageAliases = mapOf(
-        "com.miHoYo.GenshinImpact" to "com.PA.GenshinPiano",
-        "com.PA.GenshinPiano" to "com.PA.GenshinPiano"
+        "com.miHoYo.GenshinImpact" to "layout.LAYOUT_21",
+        "com.PA.GenshinPiano" to "layout.LAYOUT_21",
+        "com.any.piano" to "layout.LAYOUT_21",
+        "com.sky.xlzq" to "layout.LAYOUT_15",
+        "com.tgc.sky.android" to "layout.LAYOUT_15",
+        "com.netease.sky" to "layout.LAYOUT_15"
     )
 
-    fun normalizePackage(packageName: String): String =
-        packageAliases[packageName] ?: packageName
+    fun layoutId(type: PianoLayoutType): String = "layout.${type.name}"
+
+    fun normalizePackage(packageName: String): String {
+        if (packageName.startsWith("layout.")) return packageName
+        return packageAliases[packageName] ?: packageName
+    }
 
     fun findByPackage(packageName: String): TargetApp? {
         val normalized = normalizePackage(packageName)
         return apps.find { it.packageName == normalized || it.packageName == packageName }
-            ?: apps.find { it.openPackageName == packageName }
     }
+
+    fun findByLayout(type: PianoLayoutType): TargetApp =
+        apps.find { it.layoutType == type.name } ?: getDefault()
 
     fun getDefault(): TargetApp = apps.first()
 
-    /**
-     * 获取当前前台运行的钢琴应用
-     */
-    fun getCurrentForeground(): TargetApp? {
-        val service = PianoAccessibilityService.instance ?: return null
-        val root = service.rootInActiveWindow ?: return null
-        val pkg = root.packageName?.toString()
-        root.recycle()
-        if (pkg == null) return null
-        if (pkg == "com.example.magicpinao") return null
-        return findByPackage(pkg)
-            ?: TargetApp(pkg, "当前应用 ($pkg)", 21, 48, "自动检测到的应用", whiteKeysOnly = true, rowCount = 3)
-    }
+    fun getCurrentForeground(): TargetApp? = null
 
-    /**
-     * 获取前台应用包名
-     */
     fun getForegroundPackage(): String? {
         val service = PianoAccessibilityService.instance ?: return null
         val root = service.rootInActiveWindow ?: return null

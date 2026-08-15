@@ -219,7 +219,7 @@ fun HomeScreen(
             HomeTopBar(
                 selectedAppName = uiState.selectedAppPackage?.let {
                     SupportedApps.findByPackage(it)?.appName
-                } ?: "选择目标应用",
+                } ?: "选择键位",
                 hasCoordinates = uiState.hasCoordinates,
                 coordinateHint = when {
                     uiState.selectedAppPackage.isNullOrBlank() -> "请选择游戏"
@@ -410,14 +410,13 @@ fun HomeScreen(
         if (uiState.showCalibrationPrompt) {
             val pkg = uiState.calibratingAppPackage ?: uiState.selectedAppPackage
             val app = pkg?.let { SupportedApps.findByPackage(it) }
-            val appName = app?.appName ?: "目标应用"
-            val openLabel = app?.resolveOpenLabel() ?: appName
+            val appName = app?.appName ?: "当前键位"
             AlertDialog(
                 onDismissRequest = { viewModel.dismissCalibrationPrompt() },
                 title = { Text("需要先设置音符坐标", color = TextPrimary, fontWeight = FontWeight.Bold) },
                 text = {
                     Text(
-                        "「$appName」还没有可用的音符坐标，无法播放。\n\n请先打开「$openLabel」并进入钢琴界面，完成悬浮标定后再播放。",
+                        "「$appName」还没有可用的音符坐标，无法播放。\n\n请先在游戏钢琴界面完成悬浮标定（${app?.keyCount ?: 21}键）后再播放。",
                         color = TextHint
                     )
                 },
@@ -440,35 +439,11 @@ fun HomeScreen(
             )
         }
 
-        // 目标 App 未打开提示
+        // 旧「请打开某软件」弹窗：直接进入标定
         if (uiState.showTargetAppPrompt) {
-            val pkg = uiState.targetAppPromptPackage ?: uiState.calibratingAppPackage
-            val app = pkg?.let { SupportedApps.findByPackage(it) }
-            val openLabel = app?.resolveOpenLabel() ?: app?.appName ?: "对应软件"
-            AlertDialog(
-                onDismissRequest = { viewModel.dismissTargetAppPrompt() },
-                title = { Text("请先打开「$openLabel」", color = TextPrimary, fontWeight = FontWeight.Bold) },
-                text = {
-                    Text(
-                        "设置「${app?.appName ?: "当前游戏"}」的音符坐标前，需要先启动「$openLabel」并进入钢琴键位界面。\n\n" +
-                            "例如选择原神时，请打开 Genshin Piano（原神钢琴）；选择光遇时请打开光遇。",
-                        color = TextHint
-                    )
-                },
-                confirmButton = {
-                    Button(
-                        onClick = { viewModel.confirmOpenTargetAppAndCalibrate() },
-                        colors = ButtonDefaults.buttonColors(containerColor = PrimaryPurple)
-                    ) { Text("打开并标定") }
-                },
-                dismissButton = {
-                    TextButton(onClick = { viewModel.dismissTargetAppPrompt() }) {
-                        Text("取消", color = TextHint)
-                    }
-                },
-                containerColor = SurfaceDark,
-                shape = RoundedCornerShape(20.dp)
-            )
+            LaunchedEffect(uiState.showTargetAppPrompt) {
+                viewModel.confirmOpenTargetAppAndCalibrate()
+            }
         }
 
         // VIP 过期（ViewModel 统一触发：本地/云端播放共用）
@@ -790,7 +765,7 @@ private fun HomeTopBar(
                         color = WarningOrange,
                         modifier = Modifier.clickable(onClick = onResetCoordinates)
                     )
-                } else if (selectedAppName != "选择目标应用") {
+                } else if (selectedAppName != "选择键位") {
                     Text(
                         text = "去标定",
                         style = MaterialTheme.typography.labelSmall,
@@ -1081,11 +1056,11 @@ private fun AppSelectorDialog(
 ) {
     AlertDialog(
         onDismissRequest = onDismiss,
-        title = { Text("选择目标钢琴应用", color = TextPrimary) },
+        title = { Text("选择键位方案", color = TextPrimary) },
         text = {
             Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
                 Text(
-                    "选「原神」请打开 Genshin Piano 设置 21 键；选「光遇」请打开光遇设置 15 键。选中后会引导打开对应软件并标定。",
+                    "按游戏钢琴键位选择 21键 / 15键 / 36键。只需标定过对应键位坐标即可播放，无需检测游戏是否打开。",
                     color = TextHint,
                     style = MaterialTheme.typography.bodySmall
                 )
@@ -1104,7 +1079,7 @@ private fun AppSelectorDialog(
                                 Text(app.appName, style = MaterialTheme.typography.titleSmall, color = TextPrimary, fontWeight = FontWeight.Bold)
                                 Text(app.description, style = MaterialTheme.typography.bodySmall, color = TextHint)
                                 Text(
-                                    "${app.keyCount} 键 · 请打开「${app.resolveOpenLabel()}」",
+                                    "${app.keyCount} 键",
                                     style = MaterialTheme.typography.labelSmall,
                                     color = SecondaryCyan
                                 )
@@ -1130,7 +1105,7 @@ private fun PermissionDialog(permissionType: PermissionType, onDismiss: () -> Un
         )
         PermissionType.OVERLAY -> Pair(
             "需要悬浮窗权限",
-            "Magic Piano 需要悬浮窗权限，才能在「Genshin Piano / 原神 / 光遇」上层显示标定与播放控件。\n\n请点击「去设置」并允许「显示在其他应用上层」。\n\n若使用 MuMu 模拟器，还需关闭「应用后台保活」后重启模拟器。"
+            "Magic Piano 需要悬浮窗权限，才能在游戏上层显示标定与播放控件。\n\n请点击「去设置」并允许「显示在其他应用上层」。\n\n若使用 MuMu 模拟器，还需关闭「应用后台保活」后重启模拟器。"
         )
         else -> Pair("需要权限", "请授予相关权限以使用完整功能。")
     }

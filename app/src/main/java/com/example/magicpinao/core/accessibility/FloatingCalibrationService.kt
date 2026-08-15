@@ -65,7 +65,7 @@ class FloatingCalibrationService : Service() {
             packageName: String,
             keyCount: Int = 21,
             layoutType: String = "LAYOUT_21",
-            openTargetApp: Boolean = true
+            openTargetApp: Boolean = false
         ) {
             val intent = Intent(context, FloatingCalibrationService::class.java).apply {
                 action = ACTION_START_CALIBRATION
@@ -218,7 +218,7 @@ class FloatingCalibrationService : Service() {
         }
     }
 
-    // ===== 启动前检查目标 App =====
+    // ===== 启动前检查 =====
 
     private suspend fun prepareAndShowCalibration() {
         if (!hasOverlayPermission()) {
@@ -228,77 +228,10 @@ class FloatingCalibrationService : Service() {
             }
             return
         }
-        if (currentAppPackage.isBlank()) {
-            withContext(Dispatchers.Main) {
-                Toast.makeText(this@FloatingCalibrationService, "未指定目标应用", Toast.LENGTH_LONG).show()
-                stopCalibrationService()
-            }
-            return
-        }
-
-        // 1) 是否安装
-        if (!isAppInstalled(currentAppPackage)) {
-            withContext(Dispatchers.Main) {
-                Toast.makeText(
-                    this@FloatingCalibrationService,
-                    "未安装「${getAppName()}」\n包名: $currentAppPackage\n请先安装该应用后再标定",
-                    Toast.LENGTH_LONG
-                ).show()
-                stopCalibrationService()
-            }
-            return
-        }
-
-        // 2) 启动目标 App
-        if (openTargetOnStart) {
-            var launched = false
-            withContext(Dispatchers.Main) {
-                launched = openTargetApp(currentAppPackage)
-                if (!launched) {
-                    Toast.makeText(
-                        this@FloatingCalibrationService,
-                        "无法启动「${getAppName()}」，请确认已安装该应用",
-                        Toast.LENGTH_LONG
-                    ).show()
-                    stopCalibrationService()
-                } else {
-                    Toast.makeText(
-                        this@FloatingCalibrationService,
-                        "正在打开「${getAppName()}」，请进入钢琴界面…",
-                        Toast.LENGTH_LONG
-                    ).show()
-                }
-            }
-            if (!launched) return
-        }
-
-        // 3) 等待真正进入前台（必须是当前活动窗口）
-        var foreground = false
-        repeat(20) { // 最多约 10 秒
-            delay(500)
-            if (isTargetAppForeground(currentAppPackage)) {
-                foreground = true
-                return@repeat
-            }
-            if (it == 5 || it == 12) {
-                withContext(Dispatchers.Main) { openTargetApp(currentAppPackage) }
-            }
-        }
-
         withContext(Dispatchers.Main) {
-            if (!foreground) {
-                Toast.makeText(
-                    this@FloatingCalibrationService,
-                    "未检测到「${getAppName()}」正在运行。\n请先打开该应用并进入钢琴界面后，再在 Magic Piano 中选择该游戏进行标定。",
-                    Toast.LENGTH_LONG
-                ).show()
-                // 未启动目标 App：不显示任何标定悬浮层，直接结束
-                stopCalibrationService()
-                return@withContext
-            }
             Toast.makeText(
                 this@FloatingCalibrationService,
-                "已检测到「${getAppName()}」，请进入钢琴键位界面后点击「开始标定」",
+                "请先手动打开游戏钢琴界面，再点「开始标定」对齐 ${layoutType.label}",
                 Toast.LENGTH_LONG
             ).show()
             showTriggerButton()
@@ -374,7 +307,7 @@ class FloatingCalibrationService : Service() {
         createTriggerButton()
         Toast.makeText(
             this,
-            "请进入「${getAppName()}」钢琴界面，点击紫色「开始标定」按钮",
+            "请打开游戏钢琴界面，点击「开始标定」对齐 ${layoutType.label}",
             Toast.LENGTH_LONG
         ).show()
     }
@@ -383,17 +316,7 @@ class FloatingCalibrationService : Service() {
     private fun mirrorTriggerViaAccessibility() {
         val acc = PianoAccessibilityService.instance ?: return
         try {
-            acc.setTargetPackageForOverlay(currentAppPackage)
             acc.showCalibrationTrigger(layoutType.label, totalKeys) {
-                if (!isTargetAppForeground(currentAppPackage)) {
-                    Toast.makeText(
-                        this,
-                        "请先打开「${getAppName()}」并进入钢琴界面",
-                        Toast.LENGTH_LONG
-                    ).show()
-                    openTargetApp(currentAppPackage)
-                    return@showCalibrationTrigger
-                }
                 phase = Phase.CALIBRATE
                 removeTriggerButton()
                 acc.hideCalibrationTrigger()
@@ -488,20 +411,10 @@ class FloatingCalibrationService : Service() {
                 }
                 MotionEvent.ACTION_UP -> {
                     if (!isDrag) {
-                        // 点击开始标定前再确认目标 App
-                        if (!isTargetAppForeground(currentAppPackage)) {
-                            Toast.makeText(
-                                this,
-                                "请先打开「${getAppName()}」并进入钢琴界面",
-                                Toast.LENGTH_LONG
-                            ).show()
-                            openTargetApp(currentAppPackage)
-                        } else {
-                            phase = Phase.CALIBRATE
-                            removeTriggerButton()
-                            PianoAccessibilityService.instance?.hideCalibrationTrigger()
-                            showCalibrationUI()
-                        }
+                        phase = Phase.CALIBRATE
+                        removeTriggerButton()
+                        PianoAccessibilityService.instance?.hideCalibrationTrigger()
+                        showCalibrationUI()
                     }
                     isDrag = false
                     true
@@ -540,8 +453,7 @@ class FloatingCalibrationService : Service() {
         if (acc != null) {
             removeOverlayView() // 清掉可能残留的 APPLICATION 层
             try {
-                acc.setTargetPackageForOverlay(currentAppPackage)
-                acc.showCalibrationOverlay(markers.toList(), layoutType.label) { updated ->
+            acc.showCalibrationOverlay(markers.toList(), layoutType.label) { updated ->
                     markers.clear()
                     markers.addAll(updated)
                     updatePanelText()
@@ -782,8 +694,9 @@ class FloatingCalibrationService : Service() {
             val btn = TextView(this).apply {
                 text = when (t) {
                     PianoLayoutType.LAYOUT_21 -> "21键"
-                    PianoLayoutType.LAYOUT_36 -> "36键"
                     PianoLayoutType.LAYOUT_15 -> "15键"
+                    PianoLayoutType.LAYOUT_36 -> "36横排"
+                    PianoLayoutType.LAYOUT_36_PIANO -> "36钢琴"
                 }
                 textSize = 11f
                 gravity = Gravity.CENTER
@@ -793,6 +706,7 @@ class FloatingCalibrationService : Service() {
                     layoutType = t
                     pianoLayout = PianoLayouts.getLayout(t)
                     totalKeys = pianoLayout.keyCount
+                    currentAppPackage = SupportedApps.layoutId(t)
                     initDefaultMarkers()
                     refreshOverlayMarkers()
                     updateLayoutBtnStyles(row)
@@ -887,21 +801,23 @@ class FloatingCalibrationService : Service() {
 
         scope.launch {
             try {
-                val app = SupportedApps.findByPackage(currentAppPackage) ?: SupportedApps.getDefault()
+                val layoutPkg = SupportedApps.layoutId(layoutType)
+                currentAppPackage = layoutPkg
+                val app = SupportedApps.findByLayout(layoutType)
                 val repo = CoordinateRepository(applicationContext)
                 val name = etSchemeName?.text?.toString()?.trim()?.ifBlank {
                     val sdf = java.text.SimpleDateFormat("MMdd-HHmm", java.util.Locale.getDefault())
-                    "${app.appName}-${layoutType.label}-${sdf.format(java.util.Date())}"
-                } ?: "${app.appName}-${layoutType.label}"
+                    "${layoutType.label}-${sdf.format(java.util.Date())}"
+                } ?: layoutType.label
 
                 repo.saveCoordinate(
                     CoordinateEntity(
                         deviceId = repo.generateDeviceId(
-                            currentAppPackage,
+                            layoutPkg,
                             dm.widthPixels,
                             dm.heightPixels
                         ),
-                        packageName = currentAppPackage,
+                        packageName = layoutPkg,
                         appName = app.appName,
                         screenWidth = dm.widthPixels,
                         screenHeight = dm.heightPixels,
@@ -935,19 +851,19 @@ class FloatingCalibrationService : Service() {
     private fun initDefaultMarkers() {
         markers.clear()
         val dm = resources.displayMetrics
-        // 默认落在屏幕中下部，接近常见钢琴 UI
         val kt = dm.heightPixels * 0.32f
         val kb = dm.heightPixels * 0.88f
         val kl = dm.widthPixels * 0.08f
         val kr = dm.widthPixels * 0.92f
         val keys = pianoLayout.getOrderedKeys()
-        val perRow = (keys.size / pianoLayout.rows).coerceAtLeast(1)
+        val colsPerRow = if (layoutType == PianoLayoutType.LAYOUT_36_PIANO) 7f
+            else (keys.size / pianoLayout.rows).coerceAtLeast(1).toFloat()
+        val rh = (kb - kt) / pianoLayout.rows
+        val blackLift = rh * 0.28f
         keys.forEachIndexed { i, k ->
-            val rh = (kb - kt) / pianoLayout.rows
-            val kw = (kr - kl) / perRow
-            // row0=低音在下方，row2=高音在上方
-            val y = kb - rh * (k.row + 0.5f)
-            val x = kl + kw * (k.col + 0.5f)
+            val yBase = kb - rh * (k.row + 0.5f)
+            val y = if (k.isBlack) yBase - blackLift else yBase
+            val x = kl + (kr - kl) * ((k.visualCol + 0.5f) / colsPerRow)
             markers.add(KeyMarker(i, x, y, k.label))
         }
     }
@@ -971,9 +887,7 @@ class FloatingCalibrationService : Service() {
     }
 
     private fun getAppName() =
-        SupportedApps.findByPackage(currentAppPackage)?.resolveOpenLabel()
-            ?: SupportedApps.findByPackage(currentAppPackage)?.appName
-            ?: "目标应用"
+        SupportedApps.findByPackage(currentAppPackage)?.appName ?: layoutType.label
 
     private fun dp2px(dp: Int) = (dp * resources.displayMetrics.density).toInt()
 }

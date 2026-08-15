@@ -62,11 +62,6 @@ class PianoAccessibilityService : AccessibilityService() {
                     Log.w(TAG, "Display detection in onAccessibilityEvent failed", e)
                 }
             }
-
-            if (isPlaying && packageName != null && packageName != targetPackageName) {
-                Log.d(TAG, "Window switched from $targetPackageName to $packageName, stopping")
-                stopPerformance()
-            }
         }
 
         // 触摸捕获（用于坐标标定）

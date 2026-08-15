@@ -30,17 +30,39 @@ class CoordinateRepository(private val context: Context) {
     }
     
     /**
-     * 根据包名获取坐标配置（兼容原神旧包名 → Genshin Piano）
+     * 按键位方案取坐标：先 layoutType，再虚拟包名，最后兼容旧游戏包名。
      */
     suspend fun getCoordinateByPackage(packageName: String): CoordinateEntity? {
+        val layoutType = when {
+            packageName.startsWith("layout.") -> packageName.removePrefix("layout.")
+            else -> com.example.magicpinao.core.accessibility.SupportedApps
+                .findByPackage(packageName)?.layoutType
+        }
+        if (!layoutType.isNullOrBlank()) {
+            val byLayout = coordinateDao.getCoordinateByLayoutType(layoutType)
+            if (byLayout != null) return byLayout
+            val byLayoutPkg = coordinateDao.getCoordinateByPackage("layout.$layoutType")
+            if (byLayoutPkg != null) return byLayoutPkg
+        }
         val primary = coordinateDao.getCoordinateByPackage(packageName)
         if (primary != null) return primary
-        // 旧版「原神」坐标可能存在原神本体包名下
-        if (packageName == "com.PA.GenshinPiano") {
-            return coordinateDao.getCoordinateByPackage("com.miHoYo.GenshinImpact")
+        val aliases = when (layoutType) {
+            "LAYOUT_21" -> listOf("com.PA.GenshinPiano", "com.miHoYo.GenshinImpact", "com.any.piano")
+            "LAYOUT_15" -> listOf("com.sky.xlzq", "com.tgc.sky.android", "com.netease.sky")
+            else -> emptyList()
         }
-        if (packageName == "com.miHoYo.GenshinImpact") {
-            return coordinateDao.getCoordinateByPackage("com.PA.GenshinPiano")
+        for (alias in aliases) {
+            coordinateDao.getCoordinateByPackage(alias)?.let { return it }
+        }
+        val keyCount = when (layoutType) {
+            "LAYOUT_15" -> 15
+            "LAYOUT_36", "LAYOUT_36_PIANO" -> 36
+            "LAYOUT_21" -> 21
+            else -> null
+        }
+        // 仅 21/15 允许按键数兜底；两种 36 键不能混用
+        if (keyCount != null && keyCount != 36) {
+            return coordinateDao.getCoordinateByKeyCount(keyCount)
         }
         return null
     }

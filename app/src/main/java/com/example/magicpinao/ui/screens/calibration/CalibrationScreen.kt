@@ -80,9 +80,9 @@ fun CalibrationScreen(onBackClick: () -> Unit) {
             )
             Spacer(Modifier.height(8.dp))
             Text(
-                "1. 选择钢琴布局（原神等为 21 键，光遇为 15 键）\n" +
-                    "2. 选择目标应用，将自动打开并显示「开始标定」悬浮按钮\n" +
-                    "3. 进入该应用的钢琴界面后点击按钮\n" +
+                "1. 选择键位方案（21键 / 15键 / 36键横排 / 36键钢琴式）\n" +
+                    "2. 手动打开游戏钢琴界面\n" +
+                    "3. 点击「开始标定」悬浮按钮\n" +
                     "4. 拖动外框对齐全部琴键，必要时微调单个标记后点「完成」",
                 color = TextHint,
                 fontSize = 13.sp,
@@ -117,8 +117,9 @@ fun CalibrationScreen(onBackClick: () -> Unit) {
                             Text(
                                 when (lt) {
                                     PianoLayoutType.LAYOUT_21 -> "21键"
-                                    PianoLayoutType.LAYOUT_36 -> "36键"
                                     PianoLayoutType.LAYOUT_15 -> "15键"
+                                    PianoLayoutType.LAYOUT_36 -> "36横排"
+                                    PianoLayoutType.LAYOUT_36_PIANO -> "36钢琴"
                                 },
                                 color = if (sel) Color.White else TextPrimary,
                                 fontWeight = FontWeight.Bold
@@ -135,7 +136,7 @@ fun CalibrationScreen(onBackClick: () -> Unit) {
 
             Spacer(Modifier.height(20.dp))
             Text(
-                "选择目标应用",
+                "选择键位方案",
                 style = MaterialTheme.typography.titleMedium,
                 color = TextPrimary,
                 fontWeight = FontWeight.Bold
@@ -153,11 +154,11 @@ fun CalibrationScreen(onBackClick: () -> Unit) {
                             app.packageName,
                             layout.keyCount,
                             selectedLayout.name,
-                            openTargetApp = true
+                            openTargetApp = false
                         )
                         Toast.makeText(
                             context,
-                            "已启动标定：请进入「${app.appName}」钢琴界面点击「开始标定」",
+                            "已启动标定：请打开游戏钢琴界面后点击「开始标定」对齐 ${selectedLayout.label}",
                             Toast.LENGTH_LONG
                         ).show()
                         onBackClick()

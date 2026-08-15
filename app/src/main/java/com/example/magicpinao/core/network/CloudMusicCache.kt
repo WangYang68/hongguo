@@ -6,15 +6,34 @@ package com.example.magicpinao.core.network
 object CloudMusicCache {
     private val _cache = mutableListOf<MusicItem>()
 
+    var serverTotal: Int = 0
+        private set
+    var nextPage: Int = 1
+        private set
+    var pageSize: Int = 50
+    @Volatile
+    var loading: Boolean = false
+    var lastSearch: String? = null
+        private set
+
+    val hasMore: Boolean
+        get() = if (serverTotal > 0) size < serverTotal else true
+
     @Synchronized
-    fun set(items: List<MusicItem>) {
+    fun set(items: List<MusicItem>, total: Int = items.size, search: String? = null) {
         _cache.clear()
         _cache.addAll(items)
+        serverTotal = total
+        lastSearch = search
+        nextPage = 2
     }
 
     @Synchronized
-    fun addMore(items: List<MusicItem>) {
-        _cache.addAll(items)
+    fun addMore(items: List<MusicItem>, total: Int = serverTotal) {
+        val exist = _cache.map { it.id }.toHashSet()
+        _cache.addAll(items.filter { it.id !in exist })
+        if (total > 0) serverTotal = total
+        nextPage += 1
     }
 
     @Synchronized
@@ -33,8 +52,16 @@ object CloudMusicCache {
     }
 
     @Synchronized
+    fun markNoMore() {
+        serverTotal = size
+    }
+
+    @Synchronized
     fun clear() {
         _cache.clear()
+        serverTotal = 0
+        nextPage = 1
+        lastSearch = null
     }
 
     val size: Int
