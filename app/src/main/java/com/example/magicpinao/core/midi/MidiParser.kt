@@ -3,6 +3,7 @@ package com.example.magicpinao.core.midi
 import java.io.File
 import java.io.FileInputStream
 import java.io.InputStream
+import java.util.ArrayDeque
 import kotlin.math.roundToLong
 
 /**
@@ -40,7 +41,7 @@ class MidiParser {
                 rawEvents.addAll(parseTrack(inputStream))
             }
 
-            val converted = convertTicksToMs(rawEvents, division)
+            val converted = attachNoteDurations(convertTicksToMs(rawEvents, division))
             val sorted = converted.sortedBy { it.timestamp }
             val duration = sorted.maxByOrNull { it.timestamp }?.timestamp ?: 0L
             val noteCount = sorted.count { it is NoteOnEvent }
@@ -183,6 +184,34 @@ class MidiParser {
                 RawEventType.NOTE_OFF -> result.add(
                     NoteOffEvent(event.tick, lastMs.roundToLong(), event.channel, event.pitch, event.velocity)
                 )
+            }
+        }
+        return result
+    }
+
+    /** 把 note_off 配到对应 note_on，写入真实时值 */
+    private fun attachNoteDurations(events: List<MidiEvent>): List<MidiEvent> {
+        if (events.isEmpty()) return events
+        val result = events.toMutableList()
+        val pending = HashMap<Int, ArrayDeque<Int>>()
+        fun key(ch: Int, pitch: Int) = (ch shl 8) or pitch
+        events.forEachIndexed { i, e ->
+            when (e) {
+                is NoteOnEvent -> pending.getOrPut(key(e.channel, e.pitch)) { ArrayDeque() }.addLast(i)
+                is NoteOffEvent -> {
+                    val idx = pending[key(e.channel, e.pitch)]?.pollLast() ?: return@forEachIndexed
+                    val on = result[idx] as NoteOnEvent
+                    result[idx] = on.copy(durationMs = (e.timestamp - on.timestamp).coerceAtLeast(1L))
+                }
+                else -> {}
+            }
+        }
+        val end = events.maxOf { it.timestamp }
+        pending.values.forEach { stack ->
+            while (stack.isNotEmpty()) {
+                val idx = stack.pollLast() ?: break
+                val on = result[idx] as NoteOnEvent
+                result[idx] = on.copy(durationMs = (end - on.timestamp).coerceAtLeast(40L))
             }
         }
         return result

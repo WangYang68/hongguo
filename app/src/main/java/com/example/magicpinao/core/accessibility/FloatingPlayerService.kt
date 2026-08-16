@@ -78,6 +78,9 @@ class FloatingPlayerService : Service(), PerformanceScheduler.PlaybackStateListe
         /** 悬浮窗被用户关闭时回调（主界面清除播放状态） */
         var onPlayerClosed: (() -> Unit)? = null
 
+        /** VIP 过期时通知主界面弹出激活提示 */
+        var onVipExpired: (() -> Unit)? = null
+
         fun start(
             context: Context,
             packageName: String,
@@ -1184,6 +1187,7 @@ class FloatingPlayerService : Service(), PerformanceScheduler.PlaybackStateListe
                     withContext(Dispatchers.Main) {
                         Toast.makeText(this@FloatingPlayerService, "使用时长已到期，请回主界面激活 VIP", Toast.LENGTH_LONG).show()
                         updateStatus("VIP已过期")
+                        onVipExpired?.invoke()
                     }
                     false
                 },
@@ -1450,12 +1454,13 @@ class FloatingPlayerService : Service(), PerformanceScheduler.PlaybackStateListe
 
         val btn = TextView(this).apply {
             tag = "btnCalibrate"
-            text = "📍标定"
-            textSize = 11f
+            text = "选择键位方案"
+            textSize = 8f
             gravity = Gravity.CENTER
             setTextColor(0xFF00CEC9.toInt())
             setBackgroundResource(R.drawable.btn_speed_bg)
-            layoutParams = LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.MATCH_PARENT, 1f).apply {
+            maxLines = 2
+            layoutParams = LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.MATCH_PARENT, 1.6f).apply {
                 marginStart = dpToPx(4)
             }
             setOnClickListener {
@@ -1485,13 +1490,7 @@ class FloatingPlayerService : Service(), PerformanceScheduler.PlaybackStateListe
         // 插在列表按钮后面
         val idx = parent.indexOfChild(listBtn)
         parent.addView(btn, idx + 1)
-        // 重新平衡权重：上一首 / 列表 / 标定 / 下一首
-        for (i in 0 until parent.childCount) {
-            val child = parent.getChildAt(i)
-            val lp = child.layoutParams as? LinearLayout.LayoutParams ?: continue
-            lp.weight = 1f
-            child.layoutParams = lp
-        }
+        // 上一首 / 列表 / 选择键位方案 / 下一首
     }
 
     // ==================== 收缩/展开 ====================

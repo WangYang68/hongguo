@@ -25,10 +25,10 @@ object Transposer {
     fun mapNoteToKey(midiNote: Int, layout: PianoLayout, keyOffset: Int = 0): Int? {
         val keys = layout.getOrderedKeys()
         if (keys.isEmpty()) return null
-        return if (layout.hasBlackKeys) {
-            mapChromatic(midiNote, keys)
-        } else {
-            mapDiatonic(midiNote, keys, keyOffset)
+        return when {
+            layout.hasBlackKeys -> mapChromatic(midiNote, keys)
+            layout.type == PianoLayoutType.LAYOUT_15 -> mapSky15(midiNote, keys, keyOffset)
+            else -> mapDiatonic(midiNote, keys, keyOffset)
         }
     }
 
@@ -65,12 +65,39 @@ object Transposer {
 
         keys.indexOfFirst { it.midiNote == note }.takeIf { it >= 0 }?.let { return it }
 
-        // 折完仍不在键上（例如 15 键空洞）时，再在音域内找最近白键
         if (note !in noteSet) {
             val nearest = keys.minByOrNull { kotlin.math.abs(it.midiNote - note) }
             if (nearest != null) return keys.indexOf(nearest)
         }
         return null
+    }
+
+    /**
+     * 15键（光遇等）：先转 C 再降半音，再按指定八度折叠。
+     * C1–B3 → C4–B4 → C5–B5；C6/C#6 保留；D6 及以上折进 C5–C#6。
+     */
+    private fun mapSky15(midiNote: Int, keys: List<KeyPosition>, keyOffset: Int): Int? {
+        var note = midiNote - keyOffset
+        val semi = Math.floorMod(note, 12)
+        val whiteSemi = blackToWhite[semi] ?: semi
+        note = note - semi + whiteSemi
+
+        note = when {
+            note <= 59 -> { // C1–B3 → C4–B4，再升到 C5–B5
+                while (note < 60) note += 12
+                note + 12
+            }
+            note <= 71 -> note + 12 // C4–B4 → C5–B5
+            note == 85 -> 84        // C#6 映射到 C6
+            note <= 84 -> note      // C5–C6 保留
+            else -> {               // D6+ 折回 C5–C#6（72–85）
+                while (note > 85) note -= 12
+                if (note == 85) 84 else note
+            }
+        }
+
+        keys.indexOfFirst { it.midiNote == note }.takeIf { it >= 0 }?.let { return it }
+        return keys.minByOrNull { kotlin.math.abs(it.midiNote - note) }?.let { keys.indexOf(it) }
     }
 
     fun mapSequence(notes: List<Int>, layout: PianoLayout, keyOffset: Int = 0): List<Int> {

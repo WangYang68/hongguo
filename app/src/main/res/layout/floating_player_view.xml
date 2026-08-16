@@ -4,17 +4,18 @@
     android:layout_height="wrap_content"
     android:padding="0dp">
 
-    <!-- 主卡片 -->
     <LinearLayout
         android:id="@+id/rootLayout"
         android:layout_width="match_parent"
         android:layout_height="wrap_content"
         android:orientation="vertical"
         android:background="@drawable/floating_player_bg"
-        android:padding="8dp"
+        android:paddingStart="8dp"
+        android:paddingEnd="8dp"
+        android:paddingTop="6dp"
+        android:paddingBottom="6dp"
         android:elevation="16dp">
 
-        <!-- 拖动条 + 收缩/关闭按钮 -->
         <LinearLayout
             android:id="@+id/dragHandle"
             android:layout_width="match_parent"
@@ -27,48 +28,48 @@
                 android:layout_width="0dp"
                 android:layout_height="3dp"
                 android:layout_weight="1"
-                android:background="#30FFFFFF"
+                android:background="@drawable/player_handle_bg"
                 android:layout_gravity="center" />
 
             <TextView
                 android:id="@+id/btnCollapse"
-                android:layout_width="20dp"
-                android:layout_height="20dp"
+                android:layout_width="18dp"
+                android:layout_height="18dp"
                 android:gravity="center"
                 android:text="—"
-                android:textColor="#80FFFFFF"
-                android:textSize="12sp"
+                android:textColor="#90FFFFFF"
+                android:textSize="11sp"
                 android:clickable="true"
                 android:focusable="true"
                 android:layout_marginStart="6dp" />
 
             <TextView
                 android:id="@+id/btnClose"
-                android:layout_width="20dp"
-                android:layout_height="20dp"
+                android:layout_width="18dp"
+                android:layout_height="18dp"
                 android:gravity="center"
                 android:text="✕"
-                android:textColor="#FF6B6B"
-                android:textSize="12sp"
+                android:textColor="#FF7675"
+                android:textSize="11sp"
                 android:clickable="true"
                 android:focusable="true"
                 android:layout_marginStart="2dp" />
         </LinearLayout>
 
-        <!-- ====== 当前播放信息 ====== -->
         <LinearLayout
             android:layout_width="match_parent"
             android:layout_height="wrap_content"
             android:orientation="horizontal"
             android:gravity="center_vertical"
-            android:layout_marginBottom="6dp">
+            android:layout_marginBottom="4dp">
 
             <TextView
                 android:id="@+id/tvPlayingIcon"
                 android:layout_width="wrap_content"
                 android:layout_height="wrap_content"
-                android:text="🎵"
-                android:textSize="14sp"
+                android:text="♪"
+                android:textSize="12sp"
+                android:textColor="#A29BFE"
                 android:layout_marginEnd="6dp" />
 
             <LinearLayout
@@ -83,7 +84,7 @@
                     android:layout_height="wrap_content"
                     android:text="选择音乐"
                     android:textColor="#FFFFFF"
-                    android:textSize="12sp"
+                    android:textSize="11sp"
                     android:textStyle="bold"
                     android:maxLines="1"
                     android:ellipsize="end" />
@@ -94,29 +95,28 @@
                     android:layout_height="wrap_content"
                     android:text="准备就绪"
                     android:textColor="#A29BFE"
-                    android:textSize="10sp"
-                    android:layout_marginTop="1dp" />
+                    android:textSize="9sp"
+                    android:maxLines="1"
+                    android:ellipsize="end" />
 
                 <TextView
                     android:id="@+id/tvCoordScheme"
                     android:layout_width="match_parent"
                     android:layout_height="wrap_content"
                     android:text="坐标: 未设置"
-                    android:textColor="#00CEC9"
-                    android:textSize="9sp"
-                    android:layout_marginTop="1dp"
+                    android:textColor="#55E6C1"
+                    android:textSize="8sp"
                     android:maxLines="1"
                     android:ellipsize="end" />
             </LinearLayout>
         </LinearLayout>
 
-        <!-- ====== 导航按钮 ====== -->
         <LinearLayout
             android:layout_width="match_parent"
-            android:layout_height="28dp"
+            android:layout_height="22dp"
             android:orientation="horizontal"
             android:gravity="center"
-            android:layout_marginBottom="6dp">
+            android:layout_marginBottom="4dp">
 
             <TextView
                 android:id="@+id/btnPrev"
@@ -125,17 +125,17 @@
                 android:gravity="center"
                 android:background="@drawable/btn_speed_bg"
                 android:text="⏮"
-                android:textColor="#FFFFFF" android:textSize="12sp"
+                android:textColor="#FFFFFF" android:textSize="11sp"
                 android:clickable="true" android:focusable="true" />
 
             <TextView
                 android:id="@+id/btnMusicList"
                 android:layout_width="0dp" android:layout_height="match_parent"
-                android:layout_weight="1"
+                android:layout_weight="1.2"
                 android:gravity="center"
                 android:background="@drawable/btn_speed_bg"
-                android:text="🎵 列表"
-                android:textColor="#A29BFE" android:textSize="11sp" android:textStyle="bold"
+                android:text="列表"
+                android:textColor="#A29BFE" android:textSize="10sp" android:textStyle="bold"
                 android:clickable="true" android:focusable="true"
                 android:layout_marginHorizontal="3dp" />
 
@@ -146,28 +146,27 @@
                 android:gravity="center"
                 android:background="@drawable/btn_speed_bg"
                 android:text="⏭"
-                android:textColor="#FFFFFF" android:textSize="12sp"
+                android:textColor="#FFFFFF" android:textSize="11sp"
                 android:clickable="true" android:focusable="true" />
         </LinearLayout>
 
-        <!-- ====== 进度条 + 时间 ====== -->
         <LinearLayout
             android:layout_width="match_parent"
             android:layout_height="wrap_content"
             android:orientation="vertical"
-            android:layout_marginBottom="4dp">
+            android:layout_marginBottom="3dp">
 
             <SeekBar
                 android:id="@+id/progressBar"
                 android:layout_width="match_parent"
-                android:layout_height="14dp"
+                android:layout_height="12dp"
                 android:max="1000"
                 android:progress="0"
                 android:progressDrawable="@drawable/player_seekbar_progress"
                 android:thumb="@drawable/player_seekbar_thumb"
                 android:splitTrack="false"
-                android:paddingStart="6dp"
-                android:paddingEnd="6dp"
+                android:paddingStart="4dp"
+                android:paddingEnd="4dp"
                 android:maxHeight="3dp"
                 android:minHeight="3dp"
                 android:thumbOffset="0dp" />
@@ -182,29 +181,23 @@
                     android:layout_width="0dp" android:layout_height="wrap_content"
                     android:layout_weight="1"
                     android:text="00:00"
-                    android:textColor="#80FFFFFF" android:textSize="9sp" />
+                    android:textColor="#70FFFFFF" android:textSize="8sp" />
 
                 <TextView
                     android:id="@+id/tvTotalTime"
                     android:layout_width="wrap_content"
                     android:layout_height="wrap_content"
                     android:text="00:00"
-                    android:textColor="#80FFFFFF" android:textSize="9sp" />
+                    android:textColor="#70FFFFFF" android:textSize="8sp" />
             </LinearLayout>
         </LinearLayout>
 
-        <!-- ====== 速度控制 ====== -->
+        <!-- 速度 + 播放 同一行，压低高度 -->
         <LinearLayout
             android:layout_width="match_parent"
-            android:layout_height="24dp"
+            android:layout_height="26dp"
             android:orientation="horizontal"
-            android:gravity="center"
-            android:layout_marginBottom="6dp">
-
-            <TextView
-                android:layout_width="wrap_content" android:layout_height="wrap_content"
-                android:text="速度" android:textColor="#60FFFFFF" android:textSize="10sp"
-                android:layout_marginEnd="4dp" />
+            android:gravity="center_vertical">
 
             <TextView
                 android:id="@+id/btnSpeed05"
@@ -212,7 +205,7 @@
                 android:layout_weight="1"
                 android:gravity="center"
                 android:background="@drawable/btn_speed_bg"
-                android:text="0.5x" android:textColor="#80FFFFFF" android:textSize="10sp"
+                android:text="0.5x" android:textColor="#80FFFFFF" android:textSize="9sp"
                 android:clickable="true" android:focusable="true" />
 
             <TextView
@@ -221,9 +214,9 @@
                 android:layout_weight="1"
                 android:gravity="center"
                 android:background="@drawable/btn_speed_active_bg"
-                android:text="1x" android:textColor="#FFFFFF" android:textSize="10sp" android:textStyle="bold"
+                android:text="1x" android:textColor="#FFFFFF" android:textSize="9sp" android:textStyle="bold"
                 android:clickable="true" android:focusable="true"
-                android:layout_marginHorizontal="2dp" />
+                android:layout_marginStart="2dp" />
 
             <TextView
                 android:id="@+id/btnSpeed15"
@@ -231,8 +224,9 @@
                 android:layout_weight="1"
                 android:gravity="center"
                 android:background="@drawable/btn_speed_bg"
-                android:text="1.5x" android:textColor="#80FFFFFF" android:textSize="10sp"
-                android:clickable="true" android:focusable="true" />
+                android:text="1.5x" android:textColor="#80FFFFFF" android:textSize="9sp"
+                android:clickable="true" android:focusable="true"
+                android:layout_marginStart="2dp" />
 
             <TextView
                 android:id="@+id/btnSpeed2"
@@ -240,52 +234,43 @@
                 android:layout_weight="1"
                 android:gravity="center"
                 android:background="@drawable/btn_speed_bg"
-                android:text="2x" android:textColor="#80FFFFFF" android:textSize="10sp"
+                android:text="2x" android:textColor="#80FFFFFF" android:textSize="9sp"
                 android:clickable="true" android:focusable="true"
                 android:layout_marginStart="2dp" />
-        </LinearLayout>
-
-        <!-- ====== 播放控制 ====== -->
-        <LinearLayout
-            android:layout_width="match_parent"
-            android:layout_height="36dp"
-            android:orientation="horizontal"
-            android:gravity="center">
 
             <LinearLayout
                 android:id="@+id/btnPauseResume"
                 android:layout_width="0dp" android:layout_height="match_parent"
-                android:layout_weight="1"
+                android:layout_weight="1.35"
                 android:gravity="center"
                 android:background="@drawable/btn_play_bg"
                 android:clickable="true" android:focusable="true"
-                android:layout_marginEnd="4dp">
+                android:layout_marginStart="6dp">
 
                 <TextView
                     android:id="@+id/btnPauseResumeIcon"
                     android:layout_width="wrap_content" android:layout_height="wrap_content"
                     android:text="▶"
-                    android:textColor="#FFFFFF" android:textSize="16sp" android:textStyle="bold" />
+                    android:textColor="#FFFFFF" android:textSize="12sp" android:textStyle="bold" />
             </LinearLayout>
 
             <LinearLayout
                 android:id="@+id/btnStop"
                 android:layout_width="0dp" android:layout_height="match_parent"
-                android:layout_weight="1"
+                android:layout_weight="1.1"
                 android:gravity="center"
                 android:background="@drawable/btn_stop_bg"
                 android:clickable="true" android:focusable="true"
-                android:layout_marginStart="4dp">
+                android:layout_marginStart="3dp">
 
                 <TextView
                     android:layout_width="wrap_content" android:layout_height="wrap_content"
-                    android:text="⏹"
-                    android:textColor="#FF6B6B" android:textSize="16sp" />
+                    android:text="■"
+                    android:textColor="#FF7675" android:textSize="10sp" />
             </LinearLayout>
         </LinearLayout>
     </LinearLayout>
 
-    <!-- ====== 音乐列表面板（铺满主卡片，避免底下标题透出） ====== -->
     <LinearLayout
         android:id="@+id/musicListPanel"
         android:layout_width="match_parent"
@@ -305,8 +290,8 @@
             <TextView
                 android:layout_width="0dp" android:layout_height="wrap_content"
                 android:layout_weight="1"
-                android:text="🎵 音乐列表"
-                android:textColor="#FFFFFF" android:textSize="13sp" android:textStyle="bold" />
+                android:text="音乐列表"
+                android:textColor="#FFFFFF" android:textSize="12sp" android:textStyle="bold" />
 
             <TextView
                 android:id="@+id/tvResultCount"
@@ -314,16 +299,15 @@
                 android:text="" android:textColor="#60FFFFFF" android:textSize="10sp" />
         </LinearLayout>
 
-        <!-- 搜索框 -->
         <LinearLayout
-            android:layout_width="match_parent" android:layout_height="32dp"
+            android:layout_width="match_parent" android:layout_height="28dp"
             android:orientation="horizontal" android:gravity="center_vertical"
-            android:background="#1AFFFFFF" android:paddingHorizontal="8dp"
+            android:background="@drawable/btn_speed_bg" android:paddingHorizontal="8dp"
             android:layout_marginBottom="6dp">
 
             <TextView
                 android:layout_width="wrap_content" android:layout_height="wrap_content"
-                android:text="🔍" android:textSize="12sp"
+                android:text="🔍" android:textSize="11sp"
                 android:layout_marginEnd="6dp" />
 
             <EditText
@@ -332,7 +316,7 @@
                 android:layout_weight="1"
                 android:background="@null"
                 android:textColor="#FFFFFF" android:textColorHint="#50FFFFFF"
-                android:textSize="12sp"
+                android:textSize="11sp"
                 android:hint="搜索音乐..."
                 android:maxLines="1"
                 android:singleLine="true"

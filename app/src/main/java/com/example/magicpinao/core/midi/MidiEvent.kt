@@ -16,7 +16,8 @@ data class NoteOnEvent(
     override val timestamp: Long,
     val channel: Int,      // MIDI 通道 (0-15)
     val pitch: Int,        // 音高 (0-127)
-    val velocity: Int      // 力度 (0-127)
+    val velocity: Int,     // 力度 (0-127)
+    val durationMs: Long = 80L  // note_on 到 note_off 的时长
 ) : MidiEvent()
 
 /**

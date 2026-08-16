@@ -16,6 +16,8 @@ object GestureDispatcher {
 
     private const val TAG = "GestureDispatcher"
 
+    data class TapPoint(val x: Int, val y: Int, val durationMs: Long = 30L)
+
     enum class Strategy { ACCESSIBILITY_GESTURE, NONE }
 
     var lastStrategy: Strategy = Strategy.NONE
@@ -23,32 +25,38 @@ object GestureDispatcher {
 
     private val mainHandler = Handler(Looper.getMainLooper())
 
-    /** 统计数据 */
     var successCount = 0
         private set
     var failCount = 0
         private set
 
-    /**
-     * 分发触摸（单点或多点），所有操作在主线程执行
-     */
     fun dispatchTaps(
         service: AccessibilityService?,
-        points: List<Pair<Int, Int>>,
-        durationMs: Long = 15L
+        points: List<TapPoint>
     ) {
         if (service == null || points.isEmpty()) {
             Log.e(TAG, "dispatchTaps: service=$service, points=${points.size}")
             return
         }
 
-        // 必须在主线程调用 dispatchGesture
+        val maxDur = try {
+            GestureDescription.getMaxStrokeDuration()
+        } catch (_: Throwable) {
+            60_000L
+        }
+        val minDur = try {
+            GestureDescription.getMinStrokeDuration().coerceAtLeast(1L)
+        } catch (_: Throwable) {
+            1L
+        }
+
         mainHandler.post {
             try {
                 val builder = GestureDescription.Builder()
-                for ((x, y) in points) {
-                    val path = Path().apply { moveTo(x.toFloat(), y.toFloat()) }
-                    builder.addStroke(GestureDescription.StrokeDescription(path, 0, durationMs))
+                for (p in points) {
+                    val path = Path().apply { moveTo(p.x.toFloat(), p.y.toFloat()) }
+                    val dur = p.durationMs.coerceIn(minDur, maxDur)
+                    builder.addStroke(GestureDescription.StrokeDescription(path, 0, dur))
                 }
 
                 val dispatched = service.dispatchGesture(
@@ -61,15 +69,15 @@ object GestureDispatcher {
 
                         override fun onCancelled(gestureDescription: GestureDescription?) {
                             failCount++
-                            Log.e(TAG, "Gesture CANCELLED at ${points.map { "(${it.first},${it.second})" }}")
+                            Log.e(TAG, "Gesture CANCELLED at ${points.map { "(${it.x},${it.y})" }}")
                         }
                     },
-                    null // callback on main thread
+                    null
                 )
 
                 if (!dispatched) {
                     failCount++
-                    Log.e(TAG, "dispatchGesture returned FALSE at ${points.map { "(${it.first},${it.second})" }}")
+                    Log.e(TAG, "dispatchGesture returned FALSE at ${points.map { "(${it.x},${it.y})" }}")
                 }
             } catch (e: Exception) {
                 failCount++
@@ -78,9 +86,8 @@ object GestureDispatcher {
         }
     }
 
-    /** 单点触摸（便捷方法） */
     fun dispatchTap(service: AccessibilityService?, x: Int, y: Int, durationMs: Long = 30L) {
-        dispatchTaps(service, listOf(Pair(x, y)), durationMs)
+        dispatchTaps(service, listOf(TapPoint(x, y, durationMs)))
     }
 
     fun getDiagnostics(service: AccessibilityService?): String {

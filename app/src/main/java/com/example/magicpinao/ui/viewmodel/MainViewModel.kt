@@ -1,6 +1,7 @@
 package com.example.magicpinao.ui.viewmodel
 
 import android.app.Application
+import android.net.Uri
 import android.util.Log
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
@@ -17,14 +18,20 @@ import com.example.magicpinao.core.midi.NoteSequence
 import com.example.magicpinao.core.network.*
 import com.example.magicpinao.core.performance.PerformanceScheduler
 import com.example.magicpinao.core.utils.PermissionManager
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.flow.combine
+import kotlinx.coroutines.flow.flatMapLatest
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 
 /**
  * 主界面 ViewModel
  */
+@OptIn(ExperimentalCoroutinesApi::class)
 class MainViewModel(application: Application) : AndroidViewModel(application) {
 
     private val musicRepository = MusicRepository(application)
@@ -99,6 +106,9 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                 currentMusicTitle = null
             )
         }
+        com.example.magicpinao.core.accessibility.FloatingPlayerService.onVipExpired = {
+            _uiState.value = _uiState.value.copy(showVipExpired = true)
+        }
 
         // 同步悬浮播放器 / 调度器状态到主界面
         performanceScheduler.addStateListener(object : PerformanceScheduler.PlaybackStateListener {
@@ -120,9 +130,20 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
             }
         })
 
-        // 扫描本地 MIDI
+        viewModelScope.launch {
+            combine(_searchQuery, _selectedTag) { q, t -> q.trim() to t }
+                .flatMapLatest { (q, t) ->
+                    when {
+                        q.isBlank() && t == "全部" -> musicRepository.getAllMusic()
+                        q.isBlank() -> musicRepository.searchByTag(t)
+                        t == "全部" -> musicRepository.searchByTitleOrTag(q)
+                        else -> musicRepository.searchByTitleAndTag(q, t)
+                    }
+                }
+                .collect { music -> _musicList.value = music }
+        }
+
         scanLocalMidiFiles()
-        loadMusicList()
     }
 
     companion object {
@@ -182,34 +203,85 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
             try {
                 val context = getApplication<Application>()
                 copyMidiFilesFromAssets(context)
-                val midiDir = "${context.filesDir.absolutePath}/midi_music"
+                val midiDir = musicRepository.midiStorageDir().absolutePath
                 Log.d("MainViewModel", "Scanning MIDI files from: $midiDir")
-                val scannedMusic = musicRepository.scanLocalMidiFiles(midiDir)
+                val scannedMusic = withContext(Dispatchers.IO) {
+                    musicRepository.scanLocalMidiFiles(midiDir)
+                }
                 Log.d("MainViewModel", "Found ${scannedMusic.size} MIDI files")
-                syncMusicDatabase(midiDir)
             } catch (e: Exception) {
                 Log.e("MainViewModel", "Error scanning MIDI files", e)
             }
         }
     }
 
-    private suspend fun syncMusicDatabase(midiDir: String) {
-        try {
-            musicRepository.getAllMusic().collect { musicList ->
-                val dir = java.io.File(midiDir)
-                val existingFiles = dir.listFiles()?.map { it.absolutePath } ?: emptyList()
-                val toDelete = musicList.filter { music ->
-                    !existingFiles.contains(music.filePath)
+    fun importMidiFiles(uris: List<Uri>) {
+        if (uris.isEmpty()) return
+        viewModelScope.launch {
+            var ok = 0
+            var fail = 0
+            withContext(Dispatchers.IO) {
+                uris.forEach { uri ->
+                    musicRepository.importMidiFromUri(uri).fold(
+                        onSuccess = { ok++ },
+                        onFailure = {
+                            fail++
+                            Log.e("MainViewModel", "Import failed: ${it.message}")
+                        }
+                    )
                 }
-                if (toDelete.isNotEmpty()) {
-                    Log.d("MainViewModel", "Removing ${toDelete.size} outdated music records")
-                    toDelete.forEach { music -> musicRepository.deleteMusic(music) }
-                }
-                return@collect
             }
-        } catch (e: Exception) {
-            Log.e("MainViewModel", "Error syncing music database", e)
+            val msg = when {
+                fail == 0 -> "已导入 $ok 首本地音乐"
+                ok == 0 -> "导入失败，请选择 .mid / .midi 文件"
+                else -> "成功 $ok 首，失败 $fail 首"
+            }
+            _uiState.value = _uiState.value.copy(errorMessage = msg)
         }
+    }
+
+    fun deleteLocalMusic(music: MusicEntity) {
+        viewModelScope.launch {
+            withContext(Dispatchers.IO) { musicRepository.deleteMusic(music) }
+            if (_uiState.value.currentMusicId == music.id) {
+                stopPlayback()
+            }
+            _uiState.value = _uiState.value.copy(errorMessage = "已删除「${music.title}」")
+        }
+    }
+
+    /** 主界面右上角：仅打开悬浮播放窗，不自动开播。 */
+    fun openFloatingPlayer() {
+        val packageName = _uiState.value.selectedAppPackage?.let { SupportedApps.normalizePackage(it) }
+        if (packageName.isNullOrBlank()) {
+            _uiState.value = _uiState.value.copy(
+                showAppSelector = true,
+                pendingOpenFloating = true
+            )
+            return
+        }
+        if (!permissionManager.hasOverlayPermission()) {
+            _uiState.value = _uiState.value.copy(
+                showPermissionDialog = true,
+                permissionType = PermissionType.OVERLAY,
+                pendingOpenFloating = true
+            )
+            return
+        }
+        if (com.example.magicpinao.core.accessibility.FloatingPlayerService.instance != null) {
+            _uiState.value = _uiState.value.copy(
+                errorMessage = "悬浮窗已开启",
+                pendingOpenFloating = false
+            )
+            return
+        }
+        com.example.magicpinao.core.accessibility.FloatingPlayerService.start(
+            getApplication(), packageName, autoPlay = false
+        )
+        _uiState.value = _uiState.value.copy(
+            errorMessage = "已开启悬浮窗",
+            pendingOpenFloating = false
+        )
     }
 
     private suspend fun copyMidiFilesFromAssets(context: Application) {
@@ -237,39 +309,14 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         }
     }
 
-    private fun loadMusicList() {
-        viewModelScope.launch {
-            musicRepository.getAllMusic().collect { music ->
-                _musicList.value = music
-            }
-        }
-    }
-
     fun searchMusic(query: String) {
         _searchQuery.value = query
         currentPage = 1
-        viewModelScope.launch {
-            if (query.isBlank() && _selectedTag.value == "全部") {
-                loadMusicList()
-            } else if (query.isBlank()) {
-                musicRepository.searchByTag(_selectedTag.value).collect { _musicList.value = it }
-            } else {
-                musicRepository.searchByTitleOrTag(query).collect { _musicList.value = it }
-            }
-        }
     }
 
     fun selectTag(tag: String) {
         _selectedTag.value = tag
         currentPage = 1
-        viewModelScope.launch {
-            if (tag == "全部") {
-                if (_searchQuery.value.isBlank()) loadMusicList()
-                else musicRepository.searchByTitle(_searchQuery.value).collect { _musicList.value = it }
-            } else {
-                musicRepository.searchByTag(tag).collect { _musicList.value = it }
-            }
-        }
     }
 
     fun loadMore() {
@@ -563,6 +610,8 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
 
     fun selectTargetApp(packageName: String) {
         val pkg = SupportedApps.normalizePackage(packageName)
+        val pendingFloat = _uiState.value.pendingOpenFloating
+        val pendingMusic = _uiState.value.pendingMusicId
         getApplication<Application>()
             .getSharedPreferences(PREFS_NAME, Application.MODE_PRIVATE)
             .edit()
@@ -574,6 +623,12 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
             showCalibrationPrompt = false,
             calibratingAppPackage = pkg
         )
+        if (pendingFloat) {
+            openFloatingPlayer()
+        }
+        if (!pendingMusic.isNullOrBlank() && !pendingMusic.startsWith("cloud_")) {
+            playMusic(pendingMusic, pkg)
+        }
         viewModelScope.launch {
             refreshCoordinateStatus(pkg)
             val entity = coordinateRepository.getCoordinateByPackage(pkg)
@@ -768,7 +823,6 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     fun finishCalibration() {
         _uiState.value = _uiState.value.copy(isCalibrating = false, calibratingAppPackage = null)
         refreshCoordinateStatus()
-        loadMusicList()
     }
 
     private fun playMusic(musicId: String, packageName: String) {
@@ -845,18 +899,27 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     }
 
     fun resumePlayback() {
-        val pkg = _uiState.value.selectedAppPackage ?: return
-        val title = _uiState.value.currentMusicTitle ?: ""
-        val id = _uiState.value.currentMusicId
-        // 悬浮窗必须打开才能继续播放
-        if (com.example.magicpinao.core.accessibility.FloatingPlayerService.instance == null) {
-            com.example.magicpinao.core.accessibility.FloatingPlayerService.start(
-                getApplication(), pkg, title, id, autoPlay = true
-            )
-        } else {
-            performanceScheduler.resume()
-            _uiState.value = _uiState.value.copy(isPlaying = true)
+        viewModelScope.launch {
+            if (!ensureVipNotExpired()) return@launch
+            val pkg = _uiState.value.selectedAppPackage ?: return@launch
+            val title = _uiState.value.currentMusicTitle ?: ""
+            val id = _uiState.value.currentMusicId
+            if (com.example.magicpinao.core.accessibility.FloatingPlayerService.instance == null) {
+                com.example.magicpinao.core.accessibility.FloatingPlayerService.start(
+                    getApplication(), pkg, title, id, autoPlay = true
+                )
+            } else {
+                performanceScheduler.resume()
+                _uiState.value = _uiState.value.copy(isPlaying = true)
+            }
         }
+    }
+
+    /** VIP 激活成功后重试待播的本地音乐 */
+    fun retryPendingLocalPlayback() {
+        val id = _uiState.value.pendingMusicId ?: return
+        if (id.startsWith("cloud_")) return
+        playMusic(id)
     }
 
     fun stopPlayback() {
@@ -906,7 +969,9 @@ data class MainUiState(
     val showTargetAppPrompt: Boolean = false,
     val targetAppPromptPackage: String? = null,
     /** VIP 过期引导（本地/云端播放共用） */
-    val showVipExpired: Boolean = false
+    val showVipExpired: Boolean = false,
+    /** 选择游戏或授予悬浮窗权限后自动打开悬浮窗 */
+    val pendingOpenFloating: Boolean = false
 )
 
 sealed class AppCheckResult {

@@ -126,7 +126,13 @@ class PerformanceScheduler {
                 coordMgr.mapMidiNoteToKeyIndex(
                     e.pitch, baseNote, keyCount, whiteKeysOnly, layoutType, keyOffset
                 )?.let {
-                    ScheduledEvent(e.timestamp, (e.timestamp / speed).toLong(), it, e.velocity)
+                    ScheduledEvent(
+                        originalTimestamp = e.timestamp,
+                        scaledTimestamp = (e.timestamp / speed).toLong(),
+                        keyIndex = it,
+                        velocity = e.velocity,
+                        originalDurationMs = e.durationMs
+                    )
                 }
             }
             .sortedBy { it.scaledTimestamp }
@@ -232,7 +238,10 @@ class PerformanceScheduler {
     }
 
     fun getCurrentPosition(): Long = eventQueue.getOrNull(eventIndex)?.scaledTimestamp ?: 0L
-    fun getDuration(): Long = eventQueue.lastOrNull()?.scaledTimestamp ?: 0L
+    fun getDuration(): Long {
+        val last = eventQueue.lastOrNull() ?: return 0L
+        return last.scaledTimestamp + last.scaledDurationMs(speed)
+    }
 
     // ==================== private ====================
 
@@ -260,7 +269,13 @@ class PerformanceScheduler {
         // 重新缩放所有时间戳
         eventQueue = eventQueue.map { evt ->
             val originalTs = evt.originalTimestamp
-            ScheduledEvent(originalTs, (originalTs / speed).toLong(), evt.keyIndex, evt.velocity)
+            ScheduledEvent(
+                originalTs,
+                (originalTs / speed).toLong(),
+                evt.keyIndex,
+                evt.velocity,
+                evt.originalDurationMs
+            )
         }.sortedBy { it.scaledTimestamp }
 
         // 定位当前位置
@@ -304,15 +319,19 @@ class PerformanceScheduler {
                 eventIndex++
             }
 
-            // 分发音符：统一通过 GestureDispatcher（主线程安全）
+            // 分发音符：按时值点击（受下一音间隔限制，避免手势互相取消）
             val service = PianoAccessibilityService.instance
             val coords = coordinateManager?.getCurrentCoordinates()
+            val nextTs = eventQueue.getOrNull(eventIndex)?.scaledTimestamp
+            val gap = if (nextTs != null) (nextTs - batchTs) else Long.MAX_VALUE
 
             if (service != null && coords != null) {
                 val validTaps = batch.mapNotNull { evt ->
                     if (evt.keyIndex in coords.indices) {
                         val c = coords[evt.keyIndex]
-                        Pair(c.centerX, c.centerY)
+                        val midiDur = evt.scaledDurationMs(speed)
+                        val tapDur = minOf(midiDur, (gap - 8L).coerceAtLeast(20L)).coerceIn(20L, 320L)
+                        GestureDispatcher.TapPoint(c.centerX, c.centerY, tapDur)
                     } else {
                         failCount++
                         Log.w(TAG, "Key idx=${evt.keyIndex} out of range")
@@ -320,7 +339,7 @@ class PerformanceScheduler {
                     }
                 }
                 if (validTaps.isNotEmpty()) {
-                    GestureDispatcher.dispatchTaps(service, validTaps, 15L)
+                    GestureDispatcher.dispatchTaps(service, validTaps)
                     successCount += validTaps.size
                     if (validTaps.size > 1) {
                         Log.d(TAG, "Chord: ${validTaps.size} notes @ ${batchTs}ms")
@@ -345,9 +364,13 @@ class PerformanceScheduler {
     }
 
     private data class ScheduledEvent(
-        val originalTimestamp: Long,  // 原始 MIDI 时间戳（不受速度影响）
-        val scaledTimestamp: Long,    // 速度缩放后的时间戳
+        val originalTimestamp: Long,
+        val scaledTimestamp: Long,
         val keyIndex: Int,
-        val velocity: Int
-    )
+        val velocity: Int,
+        val originalDurationMs: Long
+    ) {
+        fun scaledDurationMs(playbackSpeed: Float): Long =
+            (originalDurationMs / playbackSpeed).toLong().coerceAtLeast(20L)
+    }
 }

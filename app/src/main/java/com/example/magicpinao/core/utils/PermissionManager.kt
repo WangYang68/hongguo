@@ -1,8 +1,10 @@
 package com.example.magicpinao.core.utils
 
+import android.content.ComponentName
 import android.content.Context
 import android.content.Intent
 import android.os.Build
+import android.os.Bundle
 import android.provider.Settings
 import android.text.TextUtils
 import com.example.magicpinao.core.accessibility.PianoAccessibilityService
@@ -48,12 +50,43 @@ class PermissionManager(private val context: Context) {
     }
     
     /**
-     * 打开无障碍服务设置页面
+     * 尽量直接打开本应用的无障碍开关页；失败则退回系统无障碍列表并尝试定位条目。
      */
     fun openAccessibilitySettings() {
-        val intent = Intent(Settings.ACTION_ACCESSIBILITY_SETTINGS)
-        intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
-        context.startActivity(intent)
+        val component = ComponentName(context, PianoAccessibilityService::class.java)
+        val flatten = component.flattenToString()
+
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
+            try {
+                val details = Intent(Settings.ACTION_ACCESSIBILITY_DETAILS_SETTINGS).apply {
+                    addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+                    putExtra(Intent.EXTRA_COMPONENT_NAME, component)
+                    putExtra("android.intent.extra.COMPONENT_NAME", flatten)
+                }
+                context.startActivity(details)
+                return
+            } catch (_: Exception) {
+            }
+        }
+
+        try {
+            val highlight = Intent(Settings.ACTION_ACCESSIBILITY_SETTINGS).apply {
+                addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+                val args = Bundle()
+                args.putString(":settings:fragment_args_key", flatten)
+                putExtra(":settings:fragment_args_key", flatten)
+                putExtra(":settings:show_fragment_args", args)
+                putExtra("extra_fragment_arg_key", flatten)
+                putExtra(Intent.EXTRA_COMPONENT_NAME, component)
+            }
+            context.startActivity(highlight)
+            return
+        } catch (_: Exception) {
+        }
+
+        val fallback = Intent(Settings.ACTION_ACCESSIBILITY_SETTINGS)
+        fallback.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+        context.startActivity(fallback)
     }
     
     /**

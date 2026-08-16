@@ -56,6 +56,9 @@ data class PianoLayout(
             getRowKeys(row).sortedBy { it.visualCol }
         }
     }
+
+    /** 三排共用的列数：以上排最右键为准，避免上排多一键时压缩前面间距。 */
+    fun sharedColumnCount(): Float = (keys.maxOfOrNull { it.visualCol } ?: 0f) + 1f
 }
 
 object PianoLayouts {
@@ -91,6 +94,30 @@ object PianoLayouts {
             val midi = octave * 12 + col
             val label = if (col == 12) "1'" else CHROMATIC_LABELS[col]
             target.add(KeyPosition(row, col, col % 12 in listOf(1, 3, 6, 8, 10), midi, label, col.toFloat()))
+        }
+    }
+
+    /**
+     * 钢琴八度视觉列：白键占 0–6，黑键落在缝隙（E–F 之间无黑键），
+     * 多出的高音 C 另起第 7 列。
+     */
+    private val PIANO_VISUAL_COL = floatArrayOf(
+        0f, 0.5f, 1f, 1.5f, 2f, 3f, 3.5f, 4f, 4.5f, 5f, 5.5f, 6f
+    )
+
+    private fun addPianoOctave(
+        target: MutableList<KeyPosition>,
+        row: Int,
+        octave: Int,
+        throughCNext: Boolean = false
+    ) {
+        val count = if (throughCNext) 13 else 12
+        for (col in 0 until count) {
+            val midi = octave * 12 + col
+            val isBlack = col % 12 in listOf(1, 3, 6, 8, 10)
+            val visual = if (col == 12) 7f else PIANO_VISUAL_COL[col]
+            val label = if (col == 12) "1'" else CHROMATIC_LABELS[col]
+            target.add(KeyPosition(row, col, isBlack, midi, label, visual))
         }
     }
 
@@ -184,10 +211,38 @@ object PianoLayouts {
         }
     )
 
+    private fun shaped36() = PianoLayout(
+        type = PianoLayoutType.LAYOUT_36_SHAPED,
+        keyCount = 36,
+        rows = 3,
+        hasBlackKeys = true,
+        staggerBlackKeys = true,
+        rowLabels = listOf("异形36 低音 C3-B3", "中音 C4-B4", "高音 C5-B5"),
+        keys = buildList {
+            addPianoOctave(this, 0, 3)
+            addPianoOctave(this, 1, 4)
+            addPianoOctave(this, 2, 5)
+        }
+    )
+
+    private fun shaped37() = PianoLayout(
+        type = PianoLayoutType.LAYOUT_37_SHAPED,
+        keyCount = 37,
+        rows = 3,
+        hasBlackKeys = true,
+        staggerBlackKeys = true,
+        rowLabels = listOf("异形37 低音 C3-B3", "中音 C4-B4", "高音 C5-C6"),
+        keys = buildList {
+            addPianoOctave(this, 0, 3)
+            addPianoOctave(this, 1, 4)
+            addPianoOctave(this, 2, 5, throughCNext = true)
+        }
+    )
+
     val LAYOUT_36 = linear36(PianoLayoutType.LAYOUT_36, "通用36")
-    val LAYOUT_36_SHAPED = linear36(PianoLayoutType.LAYOUT_36_SHAPED, "异形36")
+    val LAYOUT_36_SHAPED = shaped36()
     val LAYOUT_37 = linear37(PianoLayoutType.LAYOUT_37, "通用37")
-    val LAYOUT_37_SHAPED = linear37(PianoLayoutType.LAYOUT_37_SHAPED, "异形37")
+    val LAYOUT_37_SHAPED = shaped37()
 
     fun getLayout(type: PianoLayoutType): PianoLayout = when (type) {
         PianoLayoutType.LAYOUT_15 -> LAYOUT_15

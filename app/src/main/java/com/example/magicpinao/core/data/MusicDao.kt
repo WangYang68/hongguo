@@ -56,6 +56,12 @@ interface MusicDao {
      */
     @Query("SELECT * FROM music WHERE id = :id")
     suspend fun getMusicById(id: String): MusicEntity?
+
+    @Query("SELECT * FROM music WHERE filePath = :filePath LIMIT 1")
+    suspend fun getMusicByFilePath(filePath: String): MusicEntity?
+
+    @Query("SELECT * FROM music ORDER BY createdAt DESC")
+    suspend fun getAllMusicList(): List<MusicEntity>
     
     /**
      * 获取所有标签（去重）
@@ -68,6 +74,9 @@ interface MusicDao {
      */
     @Query("SELECT * FROM music WHERE title LIKE :keyword OR tags LIKE :tagKeyword ORDER BY createdAt DESC")
     fun searchByTitleOrTag(keyword: String, tagKeyword: String): Flow<List<MusicEntity>>
+
+    @Query("SELECT * FROM music WHERE (title LIKE :keyword OR tags LIKE :keyword) AND tags LIKE :tag ORDER BY createdAt DESC")
+    fun searchByTitleAndTag(keyword: String, tag: String): Flow<List<MusicEntity>>
     
     /**
      * 分页获取音乐（单次查询）

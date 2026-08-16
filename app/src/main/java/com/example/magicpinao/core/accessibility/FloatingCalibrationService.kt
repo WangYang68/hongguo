@@ -112,7 +112,8 @@ class FloatingCalibrationService : Service() {
         val keyIndex: Int,
         var x: Float = 0f,
         var y: Float = 0f,
-        val label: String = ""
+        val label: String = "",
+        val isBlack: Boolean = false
     )
 
     private val markers = mutableListOf<KeyMarker>()
@@ -881,13 +882,12 @@ class FloatingCalibrationService : Service() {
         val keys = pianoLayout.getOrderedKeys()
         val rh = (kb - kt) / pianoLayout.rows
         val blackLift = rh * 0.28f
+        val cols = pianoLayout.sharedColumnCount().coerceAtLeast(1f)
         keys.forEachIndexed { i, k ->
-            val rowKeys = pianoLayout.getRowKeys(k.row)
-            val cols = (rowKeys.maxOfOrNull { it.visualCol } ?: 0f) + 1f
             val yBase = kb - rh * (k.row + 0.5f)
             val y = if (pianoLayout.staggerBlackKeys && k.isBlack) yBase - blackLift else yBase
             val x = kl + (kr - kl) * ((k.visualCol + 0.5f) / cols)
-            markers.add(KeyMarker(i, x, y, k.label))
+            markers.add(KeyMarker(i, x, y, k.label, k.isBlack && pianoLayout.staggerBlackKeys))
         }
     }
 
@@ -979,6 +979,7 @@ class CalibrationOverlayView(context: Context) : View(context) {
 
     private var markers: List<FloatingCalibrationService.KeyMarker> = emptyList()
     private val markerR = 28f
+    private val blackMarkerR = 16f
     private val handleS = 24f
 
     var onMarkersChanged: ((List<FloatingCalibrationService.KeyMarker>) -> Unit)? = null
@@ -1025,12 +1026,15 @@ class CalibrationOverlayView(context: Context) : View(context) {
         return Drag.NONE
     }
 
+    private fun markerRadius(m: FloatingCalibrationService.KeyMarker) =
+        if (m.isBlack) blackMarkerR else markerR
+
     private fun hitMarker(x: Float, y: Float): Int {
         for (i in markers.indices.reversed()) {
             val d = kotlin.math.sqrt(
                 ((x - markers[i].x) * (x - markers[i].x) + (y - markers[i].y) * (y - markers[i].y)).toDouble()
             )
-            if (d < markerR + 16f) return i
+            if (d < markerRadius(markers[i]) + 16f) return i
         }
         return -1
     }
@@ -1052,13 +1056,16 @@ class CalibrationOverlayView(context: Context) : View(context) {
         val pr = (markers.size / 3).coerceAtLeast(1)
         for (r in 0..2) {
             val rm = markers.filter { it.keyIndex / pr == r || (r == 2 && it.keyIndex / pr >= 2) }
-                .sortedBy { it.x }
-            for (i in 0 until rm.size - 1) {
-                c.drawLine(rm[i].x, rm[i].y, rm[i + 1].x, rm[i + 1].y, paintLine)
+            listOf(rm.filter { !it.isBlack }, rm.filter { it.isBlack }).forEach { group ->
+                val sorted = group.sortedBy { it.x }
+                for (i in 0 until sorted.size - 1) {
+                    c.drawLine(sorted[i].x, sorted[i].y, sorted[i + 1].x, sorted[i + 1].y, paintLine)
+                }
             }
         }
         markers.forEachIndexed { i, m ->
-            val rr = if (drag == Drag.MARKER && dragIdx == i) markerR + 8f else markerR
+            val baseR = markerRadius(m)
+            val rr = if (drag == Drag.MARKER && dragIdx == i) baseR + 8f else baseR
             c.drawCircle(m.x, m.y, rr, paintMarker)
             c.drawCircle(m.x, m.y, rr, paintMarkerStroke)
             if (drag == Drag.MARKER && dragIdx == i) c.drawCircle(m.x, m.y, rr + 4f, paintSel)

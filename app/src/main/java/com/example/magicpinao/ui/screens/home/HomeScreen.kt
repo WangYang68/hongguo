@@ -1,5 +1,7 @@
 package com.example.magicpinao.ui.screens.home
 
+import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.animation.*
 import androidx.compose.animation.core.*
 import androidx.compose.foundation.background
@@ -24,8 +26,6 @@ import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.layout.ContentScale
-import androidx.compose.ui.platform.LocalConfiguration
-import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
@@ -56,7 +56,6 @@ fun HomeScreen(
     onCalibrationClick: () -> Unit,
     onNavigateToProfile: () -> Unit = {}
 ) {
-    val context = LocalContext.current
     val uiState by viewModel.uiState.collectAsState()
     val musicList by viewModel.musicList.collectAsState()
     val cloudMusicList by viewModel.cloudMusicList.collectAsState()
@@ -73,6 +72,13 @@ fun HomeScreen(
     var pendingCalibrationKeyCount by remember { mutableIntStateOf(21) }
     var showVipExpiredDialog by remember { mutableStateOf(false) }
     var pendingCloudMusic by remember { mutableStateOf<MusicItem?>(null) }
+    var pendingDeleteMusic by remember { mutableStateOf<MusicEntity?>(null) }
+
+    val importMidiLauncher = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.OpenMultipleDocuments()
+    ) { uris ->
+        if (uris.isNotEmpty()) viewModel.importMidiFiles(uris)
+    }
 
     val tags = remember { listOf("全部", "流行", "古典", "动漫", "游戏", "钢琴", "爵士") }
 
@@ -173,6 +179,7 @@ fun HomeScreen(
                                     AuthManager.updateVipStatus("2")
                                     // 重新尝试播放
                                     pendingCloudMusic?.let { viewModel.playCloudMusic(it) }
+                                    viewModel.retryPendingLocalPlayback()
                                 } else {
                                     activateError = message
                                 }
@@ -252,34 +259,66 @@ fun HomeScreen(
                     else viewModel.scanLocalMidiFiles()
                     viewModel.refreshCoordinateStatus()
                 },
+                onOpenFloatingClick = { viewModel.openFloatingPlayer() },
                 onProfileClick = onNavigateToProfile
             )
 
             // 根据当前Tab显示不同内容
             when (selectedTab) {
                 HomeTab.LOCAL -> {
-                    // 搜索框
-                    SearchBar(
-                        query = searchQuery,
-                        onQueryChange = viewModel::searchMusic,
-                        modifier = Modifier.padding(horizontal = 16.dp, vertical = 8.dp)
-                    )
-                    // 标签筛选行
+                    Row(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(horizontal = 16.dp, vertical = 8.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(8.dp)
+                    ) {
+                        SearchBar(
+                            query = searchQuery,
+                            onQueryChange = viewModel::searchMusic,
+                            modifier = Modifier.weight(1f),
+                            placeholder = "搜索本地音乐..."
+                        )
+                        Surface(
+                            onClick = {
+                                importMidiLauncher.launch(
+                                    arrayOf("audio/midi", "audio/mid", "audio/*", "*/*")
+                                )
+                            },
+                            shape = RoundedCornerShape(16.dp),
+                            color = PrimaryPurple
+                        ) {
+                            Row(
+                                modifier = Modifier.padding(horizontal = 12.dp, vertical = 14.dp),
+                                verticalAlignment = Alignment.CenterVertically,
+                                horizontalArrangement = Arrangement.spacedBy(4.dp)
+                            ) {
+                                Icon(
+                                    Icons.Default.Add,
+                                    contentDescription = "导入",
+                                    tint = Color.White,
+                                    modifier = Modifier.size(18.dp)
+                                )
+                                Text("导入", color = Color.White, style = MaterialTheme.typography.labelMedium)
+                            }
+                        }
+                    }
                     TagFilterRow(
                         tags = tags,
                         selectedTag = selectedTag,
                         onTagClick = viewModel::selectTag
                     )
-                    // 本地音乐列表
                     if (musicList.isEmpty()) {
-                        EmptyStateView(message = "暂无本地音乐", hint = "请将 MIDI 文件放入 assets/midi_music 目录")
+                        EmptyStateView(
+                            message = if (searchQuery.isBlank()) "暂无本地音乐" else "未找到匹配的音乐",
+                            hint = if (searchQuery.isBlank()) "点击「导入」选择 MIDI 文件，数据保存在本机" else "试试其他关键词"
+                        )
                     } else {
                         LocalMusicList(
                             musicList = musicList,
                             uiState = uiState,
-                            viewModel = viewModel,
-                            context = context,
-                            onMusicClick = onMusicClick
+                            onMusicClick = onMusicClick,
+                            onDeleteClick = { pendingDeleteMusic = it }
                         )
                     }
                 }
@@ -289,7 +328,8 @@ fun HomeScreen(
                     SearchBar(
                         query = cloudSearchQuery,
                         onQueryChange = { viewModel.searchCloudMusic(it) },
-                        modifier = Modifier.padding(horizontal = 16.dp, vertical = 8.dp)
+                        modifier = Modifier.padding(horizontal = 16.dp, vertical = 8.dp),
+                        placeholder = "搜索云音乐..."
                     )
                     // 云音乐列表
                     if (isCloudLoading && cloudMusicList.isEmpty()) {
@@ -484,6 +524,35 @@ fun HomeScreen(
             )
         }
 
+        pendingDeleteMusic?.let { music ->
+            AlertDialog(
+                onDismissRequest = { pendingDeleteMusic = null },
+                title = { Text("删除本地音乐", color = TextPrimary, fontWeight = FontWeight.Bold) },
+                text = {
+                    Text(
+                        "确定删除「${music.title}」？文件会从本机资料库移除。",
+                        color = TextHint
+                    )
+                },
+                confirmButton = {
+                    Button(
+                        onClick = {
+                            viewModel.deleteLocalMusic(music)
+                            pendingDeleteMusic = null
+                        },
+                        colors = ButtonDefaults.buttonColors(containerColor = ErrorRed)
+                    ) { Text("删除") }
+                },
+                dismissButton = {
+                    TextButton(onClick = { pendingDeleteMusic = null }) {
+                        Text("取消", color = TextHint)
+                    }
+                },
+                containerColor = SurfaceDark,
+                shape = RoundedCornerShape(20.dp)
+            )
+        }
+
         // 错误提示
         uiState.errorMessage?.let { error ->
             Snackbar(
@@ -504,21 +573,10 @@ fun HomeScreen(
 private fun LocalMusicList(
     musicList: List<MusicEntity>,
     uiState: MainUiState,
-    viewModel: MainViewModel,
-    context: android.content.Context,
-    onMusicClick: (MusicEntity) -> Unit
+    onMusicClick: (MusicEntity) -> Unit,
+    onDeleteClick: (MusicEntity) -> Unit
 ) {
-    val listState = rememberLazyListState()
-    LaunchedEffect(listState.layoutInfo.visibleItemsInfo.lastOrNull()?.index) {
-        val lastVisibleIndex = listState.layoutInfo.visibleItemsInfo.lastOrNull()?.index ?: 0
-        val totalItems = listState.layoutInfo.totalItemsCount
-        if (totalItems > 0 && lastVisibleIndex >= totalItems - 3) {
-            viewModel.loadMore()
-        }
-    }
-
     LazyColumn(
-        state = listState,
         modifier = Modifier.fillMaxSize(),
         contentPadding = PaddingValues(start = 16.dp, end = 16.dp, top = 8.dp, bottom = 80.dp),
         verticalArrangement = Arrangement.spacedBy(10.dp)
@@ -528,7 +586,8 @@ private fun LocalMusicList(
                 music = music,
                 isCurrentlyPlaying = uiState.currentMusicId == music.id,
                 isPaused = uiState.currentMusicId == music.id && !uiState.isPlaying,
-                onClick = { onMusicClick(music) }
+                onClick = { onMusicClick(music) },
+                onDeleteClick = { onDeleteClick(music) }
             )
         }
     }
@@ -671,6 +730,7 @@ private fun HomeTopBar(
     onResetCoordinates: () -> Unit = {},
     onAppSelectorClick: () -> Unit,
     onRefreshClick: () -> Unit,
+    onOpenFloatingClick: () -> Unit,
     onProfileClick: () -> Unit
 ) {
     Surface(modifier = Modifier.fillMaxWidth(), color = SurfaceDark, shadowElevation = 4.dp) {
@@ -691,7 +751,27 @@ private fun HomeTopBar(
                     )
                 }
 
-                Row(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalAlignment = Alignment.CenterVertically) {
+                Row(horizontalArrangement = Arrangement.spacedBy(6.dp), verticalAlignment = Alignment.CenterVertically) {
+                    Surface(
+                        onClick = onOpenFloatingClick,
+                        shape = RoundedCornerShape(20.dp),
+                        color = SecondaryCyan.copy(alpha = 0.18f),
+                        border = androidx.compose.foundation.BorderStroke(1.dp, SecondaryCyan.copy(alpha = 0.4f))
+                    ) {
+                        Row(
+                            modifier = Modifier.padding(horizontal = 10.dp, vertical = 6.dp),
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.spacedBy(4.dp)
+                        ) {
+                            Icon(
+                                Icons.Default.OpenInNew,
+                                contentDescription = null,
+                                tint = SecondaryCyan,
+                                modifier = Modifier.size(16.dp)
+                            )
+                            Text("悬浮窗", style = MaterialTheme.typography.labelMedium, color = SecondaryCyan)
+                        }
+                    }
                     IconButton(onClick = onRefreshClick) {
                         Icon(Icons.Default.Refresh, contentDescription = "刷新", tint = TextPrimary, modifier = Modifier.size(22.dp))
                     }
@@ -780,13 +860,25 @@ private fun HomeTopBar(
 }
 
 @Composable
-private fun SearchBar(query: String, onQueryChange: (String) -> Unit, modifier: Modifier = Modifier) {
+private fun SearchBar(
+    query: String,
+    onQueryChange: (String) -> Unit,
+    modifier: Modifier = Modifier,
+    placeholder: String = "搜索音乐..."
+) {
     TextField(
         value = query,
         onValueChange = onQueryChange,
         modifier = modifier.fillMaxWidth().clip(RoundedCornerShape(16.dp)),
-        placeholder = { Text("搜索音乐...", color = TextHint) },
+        placeholder = { Text(placeholder, color = TextHint) },
         leadingIcon = { Icon(Icons.Default.Search, contentDescription = null, tint = TextHint) },
+        trailingIcon = {
+            if (query.isNotBlank()) {
+                IconButton(onClick = { onQueryChange("") }) {
+                    Icon(Icons.Default.Close, contentDescription = "清除", tint = TextHint)
+                }
+            }
+        },
         colors = TextFieldDefaults.colors(
             focusedContainerColor = SurfaceLight,
             unfocusedContainerColor = SurfaceLight,
@@ -834,7 +926,8 @@ private fun MusicCard(
     music: MusicEntity,
     isCurrentlyPlaying: Boolean,
     isPaused: Boolean = false,
-    onClick: () -> Unit
+    onClick: () -> Unit,
+    onDeleteClick: () -> Unit
 ) {
     val tags = remember(music.tags) { music.getTagList() }
     val active = isCurrentlyPlaying
@@ -907,6 +1000,14 @@ private fun MusicCard(
                 }
             }
 
+            IconButton(onClick = onDeleteClick) {
+                Icon(
+                    Icons.Default.Delete,
+                    contentDescription = "删除",
+                    tint = TextHint,
+                    modifier = Modifier.size(20.dp)
+                )
+            }
             Surface(
                 onClick = onClick, shape = CircleShape,
                 color = if (active) PrimaryPurpleLight else PrimaryPurple.copy(alpha = 0.3f)
@@ -1121,7 +1222,7 @@ private fun PermissionDialog(permissionType: PermissionType, onDismiss: () -> Un
     val (title, message) = when (permissionType) {
         PermissionType.ACCESSIBILITY -> Pair(
             "需要开启无障碍服务",
-            "Magic Piano 必须开启无障碍服务才能模拟点击琴键。\n\n请点击「去设置」→ 找到「Magic Piano」→ 打开开关。\n若已开启但仍提示，请先关闭再重新打开一次。"
+            "Magic Piano 必须开启无障碍服务才能模拟点击琴键。\n\n点击「去设置」将尽量直接打开本应用的无障碍开关页，请打开「Magic Piano」。\n若未跳到本应用，请在列表中找到「Magic Piano」并打开。\n已开启但仍提示时，请先关闭再重新打开一次。"
         )
         PermissionType.OVERLAY -> Pair(
             "需要悬浮窗权限",
