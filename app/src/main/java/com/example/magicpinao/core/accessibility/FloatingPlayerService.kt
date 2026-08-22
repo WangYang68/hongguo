@@ -1,6 +1,5 @@
 package com.example.magicpinao.core.accessibility
 
-import android.app.AlertDialog
 import android.app.NotificationChannel
 import android.app.NotificationManager
 import android.app.Service
@@ -12,12 +11,10 @@ import android.os.Handler
 import android.os.IBinder
 import android.os.Looper
 import android.util.Log
-import android.view.ContextThemeWrapper
 import android.view.Gravity
 import android.view.LayoutInflater
 import android.view.MotionEvent
 import android.view.View
-import android.view.Window
 import android.view.WindowManager
 import android.widget.ArrayAdapter
 import android.widget.LinearLayout
@@ -203,6 +200,10 @@ class FloatingPlayerService : Service(), PerformanceScheduler.PlaybackStateListe
     private var btnPlayMode: TextView? = null
     private var btnPressMode: TextView? = null
     private var btnTrackSelect: TextView? = null
+    private var pickerPanel: LinearLayout? = null
+    private var tvPickerTitle: TextView? = null
+    private var tvPickerMessage: TextView? = null
+    private var pickerListView: ListView? = null
 
     // 进度更新定时器
     private var progressRunnable: Runnable? = null
@@ -410,6 +411,13 @@ class FloatingPlayerService : Service(), PerformanceScheduler.PlaybackStateListe
         btnPlayMode = floatingView?.findViewById(R.id.btnPlayMode)
         btnPressMode = floatingView?.findViewById(R.id.btnPressMode)
         btnTrackSelect = floatingView?.findViewById(R.id.btnTrackSelect)
+        pickerPanel = floatingView?.findViewById(R.id.pickerPanel)
+        tvPickerTitle = floatingView?.findViewById(R.id.tvPickerTitle)
+        tvPickerMessage = floatingView?.findViewById(R.id.tvPickerMessage)
+        pickerListView = floatingView?.findViewById(R.id.pickerListView)
+        floatingView?.findViewById<TextView>(R.id.btnPickerClose)?.setOnClickListener {
+            hidePickerPanel()
+        }
 
         // 显示当前音符坐标方案（原神 / 光遇 …）
         refreshCoordinateLabel()
@@ -905,6 +913,7 @@ class FloatingPlayerService : Service(), PerformanceScheduler.PlaybackStateListe
     }
 
     private fun showMusicListPanel() {
+        hidePickerPanel()
         musicListPanel?.visibility = View.VISIBLE
         // 添加过滤模式按钮
         ensureFilterButtons()
@@ -1440,47 +1449,52 @@ class FloatingPlayerService : Service(), PerformanceScheduler.PlaybackStateListe
         }
     }
 
-    private fun overlayDialogContext(): Context =
-        ContextThemeWrapper(this, android.R.style.Theme_Material_Light_Dialog_Alert)
-
-    private fun applyOverlayWindowFlags(window: Window?) {
-        window ?: return
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
-            window.setType(WindowManager.LayoutParams.TYPE_APPLICATION_OVERLAY)
-        } else {
-            @Suppress("DEPRECATION")
-            window.setType(WindowManager.LayoutParams.TYPE_SYSTEM_ALERT)
-        }
-        window.clearFlags(
-            WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE or
-                WindowManager.LayoutParams.FLAG_NOT_TOUCHABLE
-        )
-    }
-
     private fun showOverlayListDialog(title: String, items: Array<String>, onSelect: (Int) -> Unit) {
-        requestOverlayFocus(true)
-        val dialog = AlertDialog.Builder(overlayDialogContext())
-            .setTitle(title)
-            .setItems(items) { d, which ->
-                onSelect(which)
-                d.dismiss()
-            }
-            .setOnDismissListener { requestOverlayFocus(false) }
-            .create()
-        dialog.setOnShowListener { applyOverlayWindowFlags(dialog.window) }
-        dialog.show()
+        showFloatingPicker(title, items.toList(), onSelect)
     }
 
     private fun showOverlayMessageDialog(title: String, message: String) {
-        requestOverlayFocus(true)
-        val dialog = AlertDialog.Builder(overlayDialogContext())
-            .setTitle(title)
-            .setMessage(message)
-            .setPositiveButton(android.R.string.ok, null)
-            .setOnDismissListener { requestOverlayFocus(false) }
-            .create()
-        dialog.setOnShowListener { applyOverlayWindowFlags(dialog.window) }
-        dialog.show()
+        showFloatingMessage(title, message)
+    }
+
+    private fun showFloatingPicker(title: String, items: List<String>, onSelect: (Int) -> Unit) {
+        val panel = pickerPanel ?: return
+        hideMusicListPanel()
+        tvPickerTitle?.text = title
+        tvPickerMessage?.visibility = View.GONE
+        pickerListView?.visibility = View.VISIBLE
+        pickerListView?.adapter = object : ArrayAdapter<String>(
+            this, android.R.layout.simple_list_item_1, items
+        ) {
+            override fun getView(position: Int, convertView: View?, parent: android.view.ViewGroup): View {
+                val view = super.getView(position, convertView, parent) as TextView
+                view.setTextColor(0xFFFFFFFF.toInt())
+                view.textSize = 12f
+                view.setPadding(12, 10, 12, 10)
+                return view
+            }
+        }
+        pickerListView?.setOnItemClickListener { _, _, position, _ ->
+            hidePickerPanel()
+            onSelect(position)
+        }
+        panel.visibility = View.VISIBLE
+    }
+
+    private fun showFloatingMessage(title: String, message: String) {
+        val panel = pickerPanel ?: return
+        hideMusicListPanel()
+        tvPickerTitle?.text = title
+        tvPickerMessage?.text = message
+        tvPickerMessage?.visibility = View.VISIBLE
+        pickerListView?.visibility = View.GONE
+        panel.visibility = View.VISIBLE
+    }
+
+    private fun hidePickerPanel() {
+        pickerPanel?.visibility = View.GONE
+        tvPickerMessage?.visibility = View.GONE
+        pickerListView?.visibility = View.VISIBLE
     }
 
     private fun updateTimeDisplay(currentMs: Long, totalMs: Long) {
@@ -1659,6 +1673,7 @@ class FloatingPlayerService : Service(), PerformanceScheduler.PlaybackStateListe
     // ==================== 收缩/展开 ====================
 
     private fun toggleCollapse() {
+        hidePickerPanel()
         isCollapsed = !isCollapsed
         val rootLayout = floatingView?.findViewById<LinearLayout>(R.id.rootLayout) ?: return
         val childCount = rootLayout.childCount

@@ -346,4 +346,65 @@
                 android:gravity="center" android:visibility="gone" />
         </FrameLayout>
     </LinearLayout>
+
+    <LinearLayout
+        android:id="@+id/pickerPanel"
+        android:layout_width="match_parent"
+        android:layout_height="match_parent"
+        android:orientation="vertical"
+        android:background="#F21A1A2E"
+        android:padding="8dp"
+        android:elevation="24dp"
+        android:clickable="true"
+        android:visibility="gone">
+
+        <LinearLayout
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:orientation="horizontal"
+            android:gravity="center_vertical"
+            android:layout_marginBottom="6dp">
+
+            <TextView
+                android:id="@+id/tvPickerTitle"
+                android:layout_width="0dp"
+                android:layout_height="wrap_content"
+                android:layout_weight="1"
+                android:text="请选择"
+                android:textColor="#FFFFFF"
+                android:textSize="12sp"
+                android:textStyle="bold" />
+
+            <TextView
+                android:id="@+id/btnPickerClose"
+                android:layout_width="24dp"
+                android:layout_height="24dp"
+                android:gravity="center"
+                android:text="✕"
+                android:textColor="#FF7675"
+                android:textSize="12sp"
+                android:clickable="true"
+                android:focusable="true" />
+        </LinearLayout>
+
+        <TextView
+            android:id="@+id/tvPickerMessage"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:textColor="#B0FFFFFF"
+            android:textSize="11sp"
+            android:paddingBottom="8dp"
+            android:visibility="gone" />
+
+        <ListView
+            android:id="@+id/pickerListView"
+            android:layout_width="match_parent"
+            android:layout_height="0dp"
+            android:layout_weight="1"
+            android:divider="#10FFFFFF"
+            android:dividerHeight="1dp"
+            android:cacheColorHint="#00000000"
+            android:listSelector="#20A29BFE"
+            android:padding="2dp" />
+    </LinearLayout>
 </FrameLayout>
