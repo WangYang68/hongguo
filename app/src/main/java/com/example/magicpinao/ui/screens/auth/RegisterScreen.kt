@@ -20,7 +20,6 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.focus.FocusRequester
 import androidx.compose.ui.focus.focusRequester
-import androidx.compose.ui.focus.onFocusChanged
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalContext
@@ -34,8 +33,9 @@ import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.example.magicpinao.core.utils.EmailSender
+import com.example.magicpinao.core.utils.VerificationCodeHelper
+import com.example.magicpinao.core.utils.isValidEmail
 import com.example.magicpinao.ui.theme.*
-import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 
 /**
@@ -63,14 +63,12 @@ fun RegisterScreen(
     var codeSentMessage by remember { mutableStateOf<String?>(null) }
     var isRegistering by remember { mutableStateOf(false) }
     var errorMessage by remember { mutableStateOf<String?>(null) }
+    var cooldownSec by remember { mutableStateOf(0) }
 
     val codeFocusRequester = remember { FocusRequester() }
     val nicknameFocusRequester = remember { FocusRequester() }
     val passwordFocusRequester = remember { FocusRequester() }
     val scrollState = rememberScrollState()
-
-    // 邮箱失去焦点时发送验证码
-    var emailWasFocused by remember { mutableStateOf(false) }
 
     Box(
         modifier = Modifier
@@ -131,61 +129,73 @@ fun RegisterScreen(
 
             Spacer(modifier = Modifier.height(32.dp))
 
-            // 邮箱输入框（失去焦点时发送验证码）
+            // 邮箱
             OutlinedTextField(
                 value = email,
                 onValueChange = { email = it; errorMessage = null },
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .onFocusChanged { focusState ->
-                        if (emailWasFocused && !focusState.isFocused && email.isNotBlank()) {
-                            // 邮箱失去焦点 -> 发送验证码
-                            if (isValidEmail(email)) {
-                                isSendingCode = true
-                                codeSentMessage = null
-                                errorMessage = null
-                                scope.launch {
-                                    val result = EmailSender.sendVerificationCode(email)
-                                    isSendingCode = false
-                                    result.fold(
-                                        onSuccess = { code ->
-                                            generatedCode = code
-                                            codeSentMessage = "验证码已发送至 $email，请查收（1-2分钟内到达）"
-                                            codeFocusRequester.requestFocus()
-                                        },
-                                        onFailure = { e ->
-                                            errorMessage = e.message ?: "验证码发送失败，请稍后重试"
-                                        }
-                                    )
-                                }
-                            } else {
-                                errorMessage = "请输入正确的邮箱格式"
-                            }
-                        }
-                        emailWasFocused = focusState.isFocused
-                    },
+                modifier = Modifier.fillMaxWidth(),
                 label = { Text("邮箱") },
                 placeholder = { Text("请输入邮箱地址", color = TextHint) },
                 leadingIcon = {
                     Icon(Icons.Default.Email, contentDescription = null, tint = PrimaryPurpleLight)
-                },
-                trailingIcon = {
-                    if (isSendingCode) {
-                        CircularProgressIndicator(
-                            modifier = Modifier.size(20.dp),
-                            color = PrimaryPurpleLight,
-                            strokeWidth = 2.dp
-                        )
-                    }
                 },
                 singleLine = true,
                 keyboardOptions = KeyboardOptions(
                     keyboardType = KeyboardType.Email,
                     imeAction = ImeAction.Next
                 ),
+                keyboardActions = KeyboardActions(
+                    onNext = { codeFocusRequester.requestFocus() }
+                ),
                 colors = textFieldColors(),
                 shape = RoundedCornerShape(16.dp)
             )
+
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(top = 8.dp),
+                horizontalArrangement = Arrangement.End
+            ) {
+                TextButton(
+                    onClick = {
+                        if (isSendingCode || cooldownSec > 0) return@TextButton
+                        VerificationCodeHelper.send(
+                            scope = scope,
+                            email = email,
+                            isValidEmail = ::isValidEmail,
+                            action = { EmailSender.sendVerificationCode(it) },
+                            onSending = { isSendingCode = it },
+                            onSuccess = { code, msg ->
+                                generatedCode = code
+                                codeSentMessage = msg
+                                errorMessage = null
+                                codeFocusRequester.requestFocus()
+                                VerificationCodeHelper.startCooldown(
+                                    scope, 60,
+                                    onTick = { cooldownSec = it },
+                                    onDone = { cooldownSec = 0 }
+                                )
+                            },
+                            onFailure = { errorMessage = it }
+                        )
+                    },
+                    enabled = !isSendingCode && cooldownSec == 0 && email.isNotBlank()
+                ) {
+                    if (isSendingCode) {
+                        CircularProgressIndicator(
+                            modifier = Modifier.size(16.dp),
+                            color = PrimaryPurpleLight,
+                            strokeWidth = 2.dp
+                        )
+                    } else {
+                        Text(
+                            text = if (cooldownSec > 0) "${cooldownSec}s 后重发" else "获取验证码",
+                            color = if (cooldownSec > 0) TextHint else SecondaryCyan
+                        )
+                    }
+                }
+            }
 
             // 验证码发送提示
             AnimatedVisibility(
@@ -462,9 +472,3 @@ fun RegisterScreen(
     }
 }
 
-/**
- * 验证邮箱格式
- */
-private fun isValidEmail(email: String): Boolean {
-    return Regex("[^@]+@[^@]+\\.[^@]+").matches(email)
-}

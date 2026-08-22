@@ -26,7 +26,6 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.focus.FocusRequester
 import androidx.compose.ui.focus.focusRequester
-import androidx.compose.ui.focus.onFocusChanged
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.layout.ContentScale
@@ -50,6 +49,8 @@ import com.example.magicpinao.core.auth.VipValidity
 import com.example.magicpinao.core.network.ApiRepository
 import com.example.magicpinao.core.network.VipRecord
 import com.example.magicpinao.core.utils.EmailSender
+import com.example.magicpinao.core.utils.VerificationCodeHelper
+import com.example.magicpinao.core.utils.isValidEmail
 import com.example.magicpinao.ui.screens.auth.textFieldColors
 import com.example.magicpinao.ui.theme.*
 import kotlinx.coroutines.launch
@@ -119,7 +120,7 @@ fun ProfileScreen(
     var isSendingResetCode by remember { mutableStateOf(false) }
     var isResetting by remember { mutableStateOf(false) }
     var resetMessage by remember { mutableStateOf<String?>(null) }
-    var resetEmailWasFocused by remember { mutableStateOf(false) }
+    var resetCooldownSec by remember { mutableStateOf(0) }
 
     // 退出确认
     var showLogoutConfirm by remember { mutableStateOf(false) }
@@ -649,32 +650,50 @@ fun ProfileScreen(
                     OutlinedTextField(
                         value = resetEmail,
                         onValueChange = { resetEmail = it; resetMessage = null },
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .onFocusChanged { focusState ->
-                                if (resetEmailWasFocused && !focusState.isFocused && resetEmail.isNotBlank()) {
-                                    isSendingResetCode = true
-                                    scope.launch {
-                                        val result = EmailSender.sendResetPasswordCode(resetEmail)
-                                        isSendingResetCode = false
-                                        result.fold(
-                                            onSuccess = { code ->
-                                                generatedResetCode = code
-                                                resetMessage = "验证码已发送"
-                                            },
-                                            onFailure = { e ->
-                                                resetMessage = e.message ?: "验证码发送失败"
-                                            }
-                                        )
-                                    }
-                                }
-                                resetEmailWasFocused = focusState.isFocused
-                            },
+                        modifier = Modifier.fillMaxWidth(),
                         label = { Text("邮箱") },
                         singleLine = true,
                         colors = textFieldColors(),
                         shape = RoundedCornerShape(12.dp)
                     )
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.End
+                    ) {
+                        TextButton(
+                            onClick = {
+                                if (isSendingResetCode || resetCooldownSec > 0) return@TextButton
+                                VerificationCodeHelper.send(
+                                    scope = scope,
+                                    email = resetEmail,
+                                    isValidEmail = ::isValidEmail,
+                                    action = { EmailSender.sendResetPasswordCode(it) },
+                                    onSending = { isSendingResetCode = it },
+                                    onSuccess = { code, msg ->
+                                        generatedResetCode = code
+                                        resetMessage = msg
+                                        VerificationCodeHelper.startCooldown(
+                                            scope, 60,
+                                            onTick = { resetCooldownSec = it },
+                                            onDone = { resetCooldownSec = 0 }
+                                        )
+                                    },
+                                    onFailure = { resetMessage = it }
+                                )
+                            },
+                            enabled = !isSendingResetCode && resetCooldownSec == 0 && resetEmail.isNotBlank()
+                        ) {
+                            Text(
+                                text = when {
+                                    isSendingResetCode -> "发送中..."
+                                    resetCooldownSec > 0 -> "${resetCooldownSec}s 后重发"
+                                    else -> "获取验证码"
+                                },
+                                color = if (resetCooldownSec > 0) TextHint else SecondaryCyan,
+                                fontSize = 13.sp
+                            )
+                        }
+                    }
                     Spacer(modifier = Modifier.height(8.dp))
 
                     // 验证码

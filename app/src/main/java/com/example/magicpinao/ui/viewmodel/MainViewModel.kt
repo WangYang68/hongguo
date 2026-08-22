@@ -101,6 +101,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
             }
             _uiState.value = _uiState.value.copy(selectedAppPackage = savedPkg)
             refreshCoordinateStatus(savedPkg)
+            refreshCalibratedLayouts()
         }
 
         // 悬浮播放窗关闭时：停止并清除当前曲目（音乐不得在无悬浮窗时继续播）
@@ -183,6 +184,13 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                 hasCoordinates = valid,
                 coordinateSchemeName = scheme
             )
+        }
+    }
+
+    fun refreshCalibratedLayouts() {
+        viewModelScope.launch {
+            val types = coordinateRepository.getAllValidLayoutTypes()
+            _uiState.value = _uiState.value.copy(calibratedLayoutTypes = types)
         }
     }
 
@@ -666,7 +674,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
             selectedAppPackage = pkg,
             showAppSelector = false,
             showCalibrationPrompt = false,
-            calibratingAppPackage = pkg
+            calibratingAppPackage = null
         )
         if (pendingFloat) {
             openFloatingPlayer()
@@ -688,9 +696,9 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     }
 
     fun toggleAppSelector() {
-        _uiState.value = _uiState.value.copy(
-            showAppSelector = !_uiState.value.showAppSelector
-        )
+        val opening = !_uiState.value.showAppSelector
+        _uiState.value = _uiState.value.copy(showAppSelector = opening)
+        if (opening) refreshCalibratedLayouts()
     }
 
     fun dismissCalibrationPrompt() {
@@ -868,6 +876,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     fun finishCalibration() {
         _uiState.value = _uiState.value.copy(isCalibrating = false, calibratingAppPackage = null)
         refreshCoordinateStatus()
+        refreshCalibratedLayouts()
     }
 
     private fun playMusic(musicId: String, packageName: String) {
@@ -1009,6 +1018,8 @@ data class MainUiState(
     val calibratingAppPackage: String? = null,
     val hasCoordinates: Boolean = false,
     val coordinateSchemeName: String? = null,
+    /** 已完成标定的键位方案 layoutType 集合 */
+    val calibratedLayoutTypes: Set<String> = emptySet(),
     val showCalibrationPrompt: Boolean = false,
     /** 目标钢琴 App 未打开时的引导弹窗 */
     val showTargetAppPrompt: Boolean = false,

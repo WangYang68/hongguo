@@ -881,12 +881,21 @@ class FloatingCalibrationService : Service() {
         val kr = dm.widthPixels * 0.94f
         val keys = pianoLayout.getOrderedKeys()
         val rh = (kb - kt) / pianoLayout.rows
-        val blackLift = rh * pianoLayout.blackKeyLiftRatio
         keys.forEachIndexed { i, k ->
             val yBase = kb - rh * (k.row + 0.5f)
-            val y = if (pianoLayout.staggerBlackKeys && k.isBlack) yBase - blackLift else yBase
+            val blackLift = blackKeyLiftFor(k, rh)
+            val y = if (blackLift > 0f) yBase - blackLift else yBase
             val x = kl + (kr - kl) * pianoLayout.xRatio(k.visualCol)
-            markers.add(KeyMarker(i, x, y, k.label, k.isBlack && pianoLayout.staggerBlackKeys))
+            val staggered = blackLift > 0f
+            markers.add(KeyMarker(i, x, y, k.label, k.isBlack && staggered))
+        }
+    }
+
+    private fun blackKeyLiftFor(key: com.example.magicpinao.core.calibration.KeyPosition, rh: Float): Float {
+        if (!key.isBlack) return 0f
+        return when (pianoLayout.type) {
+            PianoLayoutType.LAYOUT_37_SHAPED -> if (key.row == 2) rh * pianoLayout.blackKeyLiftRatio else 0f
+            else -> if (pianoLayout.staggerBlackKeys) rh * pianoLayout.blackKeyLiftRatio else 0f
         }
     }
 

@@ -16,7 +16,7 @@ enum class PianoLayoutType(val label: String, val keyCount: Int, val shortLabel:
     LAYOUT_37("37键·通用", 37, "37横"),
     LAYOUT_37_SHAPED("37键·异形", 37, "37异"),
     LAYOUT_61("61键", 61, "61"),
-    LAYOUT_88("88键", 88, "88");
+    LAYOUT_88("88键", 84, "88");
 
     companion object {
         fun fromName(name: String?): PianoLayoutType {
@@ -145,6 +145,30 @@ object PianoLayouts {
         }
     }
 
+    /** 37键异形：下排加点下标、中排原样、上排加点上标，上排多一个高音 C */
+    private fun addShaped37PianoOctave(
+        target: MutableList<KeyPosition>,
+        row: Int,
+        octave: Int,
+        throughCNext: Boolean = false
+    ) {
+        val count = if (throughCNext) 13 else 12
+        for (col in 0 until count) {
+            val midi = octave * 12 + col
+            val isBlack = col % 12 in listOf(1, 3, 6, 8, 10)
+            val visual = if (col == 12) 7f else PIANO_VISUAL_COL[col]
+            val base = if (col == 12) "1" else CHROMATIC_LABELS[col % 12]
+            val label = when {
+                col == 12 && row == 2 -> "1\u0308"
+                col == 12 -> "1'"
+                row == 0 -> "$base\u0323"
+                row == 2 -> "$base\u0307"
+                else -> base
+            }
+            target.add(KeyPosition(row, col, isBlack, midi, label, visual))
+        }
+    }
+
     /** 15键：光遇、和平精英。上 C4-G4 / 中 A4-E5 / 下 F5-C6 */
     val LAYOUT_15 = PianoLayout(
         type = PianoLayoutType.LAYOUT_15,
@@ -259,9 +283,9 @@ object PianoLayouts {
         blackKeyLiftRatio = 0.48f,
         rowLabels = listOf("异形37 低音 C3-B3", "中音 C4-B4", "高音 C5-C6"),
         keys = buildList {
-            addPianoOctave(this, 0, 3)
-            addPianoOctave(this, 1, 4)
-            addPianoOctave(this, 2, 5, throughCNext = true)
+            addShaped37PianoOctave(this, 0, 3)
+            addShaped37PianoOctave(this, 1, 4)
+            addShaped37PianoOctave(this, 2, 5, throughCNext = true)
         }
     )
 
@@ -328,11 +352,11 @@ object PianoLayouts {
         }
     }
 
-    /** 88键：标准钢琴 A0–C8，音名标注；播放时折叠到 C1–B7 */
+    /** 88键：C1–B7（MIDI 24–107），无 A0/B0/C8 */
     val LAYOUT_88: PianoLayout = buildWidePiano(
         type = PianoLayoutType.LAYOUT_88,
-        startMidi = 21,
-        endMidi = 108
+        startMidi = 24,
+        endMidi = 107
     ) { midi, _ -> midiNoteName(midi) }
 
     fun getLayout(type: PianoLayoutType): PianoLayout = when (type) {
@@ -351,7 +375,7 @@ object PianoLayouts {
     fun inferLayout(keyCount: Int, appName: String): PianoLayout {
         return when {
             keyCount == 61 -> LAYOUT_61
-            keyCount == 88 -> LAYOUT_88
+            keyCount == 88 || keyCount == 84 -> LAYOUT_88
             keyCount == 15 -> LAYOUT_15
             keyCount == 22 -> LAYOUT_22
             keyCount == 37 && appName.contains("异") -> LAYOUT_37_SHAPED

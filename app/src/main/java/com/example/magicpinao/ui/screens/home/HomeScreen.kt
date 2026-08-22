@@ -445,6 +445,7 @@ fun HomeScreen(
         if (uiState.showAppSelector) {
             AppSelectorDialog(
                 apps = SupportedApps.apps,
+                calibratedLayouts = uiState.calibratedLayoutTypes,
                 onAppSelected = { app ->
                     viewModel.selectTargetApp(app.packageName)
                 },
@@ -1215,6 +1216,7 @@ private fun PlaybackFloatingBar(
 @Composable
 private fun AppSelectorDialog(
     apps: List<com.example.magicpinao.core.accessibility.TargetApp>,
+    calibratedLayouts: Set<String>,
     onAppSelected: (com.example.magicpinao.core.accessibility.TargetApp) -> Unit,
     onDismiss: () -> Unit
 ) {
@@ -1238,6 +1240,7 @@ private fun AppSelectorDialog(
                     Spacer(Modifier.height(8.dp))
                 }
                 items(apps, key = { it.packageName }) { app ->
+                    val calibrated = app.layoutType in calibratedLayouts
                     Surface(
                         onClick = { onAppSelected(app) },
                         shape = RoundedCornerShape(12.dp),
@@ -1259,7 +1262,22 @@ private fun AppSelectorDialog(
                                 Text("🎵", fontSize = 16.sp)
                             }
                             Column(modifier = Modifier.weight(1f)) {
-                                Text(app.appName, style = MaterialTheme.typography.titleSmall, color = TextPrimary, fontWeight = FontWeight.Bold)
+                                Row(verticalAlignment = Alignment.CenterVertically) {
+                                    Text(
+                                        app.appName,
+                                        style = MaterialTheme.typography.titleSmall,
+                                        color = TextPrimary,
+                                        fontWeight = FontWeight.Bold
+                                    )
+                                    if (calibrated) {
+                                        Spacer(Modifier.width(6.dp))
+                                        Text(
+                                            "✓已标定",
+                                            style = MaterialTheme.typography.labelSmall,
+                                            color = SuccessGreen
+                                        )
+                                    }
+                                }
                                 Text(app.description, style = MaterialTheme.typography.bodySmall, color = TextHint)
                                 Text(
                                     "${app.keyCount} 键",

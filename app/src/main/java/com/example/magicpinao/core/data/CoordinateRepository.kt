@@ -4,6 +4,7 @@ import android.content.Context
 import com.google.gson.Gson
 import com.google.gson.reflect.TypeToken
 import kotlinx.coroutines.flow.Flow
+import kotlinx.coroutines.flow.first
 
 /**
  * 坐标配置仓库
@@ -60,7 +61,7 @@ class CoordinateRepository(private val context: Context) {
             "LAYOUT_36", "LAYOUT_36_PIANO", "LAYOUT_36_SHAPED" -> 36
             "LAYOUT_37", "LAYOUT_37_SHAPED" -> 37
             "LAYOUT_61" -> 61
-            "LAYOUT_88" -> 88
+            "LAYOUT_88" -> 84
             "LAYOUT_21", "LAYOUT_21_GUITAR" -> 21
             else -> null
         }
@@ -92,6 +93,17 @@ class CoordinateRepository(private val context: Context) {
         return coordinateDao.hasCoordinateForDevice(deviceId)
     }
     
+    suspend fun hasValidLayout(layoutType: String): Boolean {
+        return hasValidCoordinateForPackage("layout.$layoutType")
+    }
+
+    suspend fun getAllValidLayoutTypes(): Set<String> {
+        return coordinateDao.getAllSchemes().first()
+            .filter { isCoordinateEntityValid(it) }
+            .mapNotNull { it.layoutType.takeIf { lt -> lt.isNotBlank() } }
+            .toSet()
+    }
+
     /**
      * 检查坐标是否可用于实际点击（排除归一化 0~1 误存为像素等坏数据）
      */

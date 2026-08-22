@@ -33,17 +33,12 @@ import kotlinx.coroutines.withContext
 @Composable
 fun CalibrationScreen(onBackClick: () -> Unit) {
     val context = LocalContext.current
-    var schemesCount by remember { mutableStateOf<Map<String, Int>>(emptyMap()) }
+    var calibratedLayouts by remember { mutableStateOf<Set<String>>(emptySet()) }
 
     LaunchedEffect(Unit) {
         withContext(Dispatchers.IO) {
             val repo = CoordinateRepository(context)
-            val map = mutableMapOf<String, Int>()
-            SupportedApps.apps.forEach { app ->
-                val cnt = repo.getSchemesForPackage(app.packageName).size
-                if (cnt > 0) map[app.packageName] = cnt
-            }
-            schemesCount = map
+            calibratedLayouts = repo.getAllValidLayoutTypes()
         }
     }
 
@@ -95,11 +90,11 @@ fun CalibrationScreen(onBackClick: () -> Unit) {
             )
             Spacer(Modifier.height(8.dp))
             SupportedApps.apps.forEach { app ->
-                val cnt = schemesCount[app.packageName] ?: 0
+                val calibrated = app.layoutType in calibratedLayouts
                 val lt = PianoLayoutType.fromName(app.layoutType)
                 AppCalibrateCard(
                     app = app,
-                    schemeCount = cnt,
+                    calibrated = calibrated,
                     onClick = {
                         FloatingCalibrationService.start(
                             context,
@@ -122,7 +117,7 @@ fun CalibrationScreen(onBackClick: () -> Unit) {
 }
 
 @Composable
-private fun AppCalibrateCard(app: TargetApp, schemeCount: Int, onClick: () -> Unit) {
+private fun AppCalibrateCard(app: TargetApp, calibrated: Boolean, onClick: () -> Unit) {
     Card(
         Modifier
             .fillMaxWidth()
@@ -151,8 +146,8 @@ private fun AppCalibrateCard(app: TargetApp, schemeCount: Int, onClick: () -> Un
                 )
             }
             Column(horizontalAlignment = Alignment.End) {
-                if (schemeCount > 0) {
-                    Text("$schemeCount 方案", color = SuccessGreen, fontSize = 11.sp)
+                if (calibrated) {
+                    Text("✓已标定", color = SuccessGreen, fontSize = 11.sp)
                 } else {
                     Text("未标定", color = ErrorRed, fontSize = 11.sp)
                 }

@@ -388,7 +388,7 @@ class FloatingPlayerService : Service(), PerformanceScheduler.PlaybackStateListe
             height = WindowManager.LayoutParams.WRAP_CONTENT
             gravity = Gravity.TOP or Gravity.START
             x = (dm.widthPixels - panelWidthPx) / 2
-            y = dm.heightPixels / 4
+            y = 0
         }
 
         floatingView = LayoutInflater.from(this).inflate(R.layout.floating_player_view, null)
@@ -585,14 +585,15 @@ class FloatingPlayerService : Service(), PerformanceScheduler.PlaybackStateListe
 
         try {
             windowManager?.addView(floatingView, layoutParams)
-            floatingView?.post {
-                val h = floatingView?.height ?: return@post
-                layoutParams?.apply {
-                    x = (dm.widthPixels - panelWidthPx) / 2
-                    y = (dm.heightPixels - h) / 2
+            floatingView?.viewTreeObserver?.addOnGlobalLayoutListener(object :
+                android.view.ViewTreeObserver.OnGlobalLayoutListener {
+                override fun onGlobalLayout() {
+                    val view = floatingView ?: return
+                    if (view.height <= 0) return
+                    view.viewTreeObserver.removeOnGlobalLayoutListener(this)
+                    centerFloatingWindow()
                 }
-                floatingView?.let { windowManager?.updateViewLayout(it, layoutParams) }
-            }
+            })
             Log.d(TAG, "Floating player shown via APPLICATION_OVERLAY at (${layoutParams?.x}, ${layoutParams?.y})")
         } catch (e: Exception) {
             Log.e(TAG, "Failed to show floating player", e)
@@ -1267,9 +1268,9 @@ class FloatingPlayerService : Service(), PerformanceScheduler.PlaybackStateListe
                         val label = entity.schemeName.ifBlank {
                             "${app?.appName ?: "未知"}-${entity.keyCount}键"
                         }
-                        tvCoordScheme?.text = "坐标: $label"
+                        tvCoordScheme?.text = "坐标: $label ✓"
                     }
-                    else -> tvCoordScheme?.text = "坐标: 未设置（${app?.appName ?: pkg}）"
+                    else -> tvCoordScheme?.text = "坐标: ${app?.appName ?: pkg} ○未标定"
                 }
             }
         }
@@ -1430,23 +1431,59 @@ class FloatingPlayerService : Service(), PerformanceScheduler.PlaybackStateListe
     }
 
     private fun showLayoutPickerDialog() {
-        val items = PianoLayoutType.entries.map { it.label }.toTypedArray()
-        showOverlayListDialog("选择键位方案", items) { which ->
-            val type = PianoLayoutType.entries[which]
-            val layout = PianoLayouts.getLayout(type)
-            FloatingCalibrationService.start(
-                this,
-                SupportedApps.layoutId(type),
-                layout.keyCount,
-                type.name,
-                openTargetApp = false
-            )
-            Toast.makeText(
-                this,
-                "已选择 ${type.label}，请在游戏界面点击「开始标定」",
-                Toast.LENGTH_LONG
-            ).show()
+        scope.launch {
+            val statuses = withContext(Dispatchers.IO) {
+                PianoLayoutType.entries.associate { type ->
+                    type.name to coordinateRepository.hasValidLayout(type.name)
+                }
+            }
+            val items = PianoLayoutType.entries.map { type ->
+                val mark = if (statuses[type.name] == true) " ✓已标定" else " ○未标定"
+                type.label + mark
+            }.toTypedArray()
+            withContext(Dispatchers.Main) {
+                showOverlayListDialog("选择键位方案", items) { which ->
+                    val type = PianoLayoutType.entries[which]
+                    val hasSaved = statuses[type.name] == true
+                    if (hasSaved) {
+                        showFloatingPicker(
+                            "${type.label} 已标定",
+                            listOf("使用已有坐标", "重新标定")
+                        ) { action ->
+                            if (action == 0) switchActiveLayout(type)
+                            else startLayoutCalibration(type)
+                        }
+                    } else {
+                        startLayoutCalibration(type)
+                    }
+                }
+            }
         }
+    }
+
+    private fun switchActiveLayout(type: PianoLayoutType) {
+        val layoutPkg = SupportedApps.layoutId(type)
+        currentPackageName = layoutPkg
+        targetPackage = layoutPkg
+        refreshCoordinateLabel()
+        updateStatus("已切换到 ${type.label}")
+        Toast.makeText(this, "已使用 ${type.label} 的标定坐标", Toast.LENGTH_SHORT).show()
+    }
+
+    private fun startLayoutCalibration(type: PianoLayoutType) {
+        val layout = PianoLayouts.getLayout(type)
+        FloatingCalibrationService.start(
+            this,
+            SupportedApps.layoutId(type),
+            layout.keyCount,
+            type.name,
+            openTargetApp = false
+        )
+        Toast.makeText(
+            this,
+            "已选择 ${type.label}，请在游戏界面点击「开始标定」",
+            Toast.LENGTH_LONG
+        ).show()
     }
 
     private fun showOverlayListDialog(title: String, items: Array<String>, onSelect: (Int) -> Unit) {
@@ -1560,6 +1597,19 @@ class FloatingPlayerService : Service(), PerformanceScheduler.PlaybackStateListe
     }
 
     // ==================== 拖动 ====================
+
+    private fun centerFloatingWindow() {
+        val dm = resources.displayMetrics
+        val view = floatingView ?: return
+        val h = view.height
+        if (h <= 0) return
+        val w = layoutParams?.width?.takeIf { it > 0 } ?: panelWidthPx
+        layoutParams?.apply {
+            x = (dm.widthPixels - w) / 2
+            y = ((dm.heightPixels - h) / 2).coerceAtLeast(0)
+        }
+        windowManager?.updateViewLayout(view, layoutParams)
+    }
 
     private fun handleDrag(event: MotionEvent): Boolean {
         return when (event.action) {
@@ -1685,6 +1735,9 @@ class FloatingPlayerService : Service(), PerformanceScheduler.PlaybackStateListe
         floatingView?.findViewById<TextView>(R.id.btnCollapse)?.text = if (isCollapsed) "□" else "—"
         floatingView?.findViewWithTag<View>("resizeHandle")?.visibility =
             if (isCollapsed) View.GONE else View.VISIBLE
+        if (!isCollapsed) {
+            floatingView?.post { centerFloatingWindow() }
+        }
         floatingView?.let { windowManager?.updateViewLayout(it, layoutParams) }
     }
 
