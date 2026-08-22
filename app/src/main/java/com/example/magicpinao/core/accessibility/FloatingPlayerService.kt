@@ -12,10 +12,12 @@ import android.os.Handler
 import android.os.IBinder
 import android.os.Looper
 import android.util.Log
+import android.view.ContextThemeWrapper
 import android.view.Gravity
 import android.view.LayoutInflater
 import android.view.MotionEvent
 import android.view.View
+import android.view.Window
 import android.view.WindowManager
 import android.widget.ArrayAdapter
 import android.widget.LinearLayout
@@ -31,7 +33,6 @@ import com.example.magicpinao.core.data.CoordinateRepository
 import com.example.magicpinao.core.data.MusicEntity
 import com.example.magicpinao.core.data.MusicRepository
 import com.example.magicpinao.core.data.PianoKeyCoordinate
-import android.widget.PopupMenu
 import com.example.magicpinao.core.calibration.PianoLayoutType
 import com.example.magicpinao.core.calibration.PianoLayouts
 import com.example.magicpinao.core.midi.MidiParser
@@ -1320,19 +1321,10 @@ class FloatingPlayerService : Service(), PerformanceScheduler.PlaybackStateListe
     }
 
     private fun showSpeedPicker() {
-        val anchor = btnSpeedSelect ?: return
-        requestOverlayFocus(true)
-        val popup = PopupMenu(this, anchor)
-        speedOptions.forEach { spd ->
-            popup.menu.add(0, (spd * 10).toInt(), 0, String.format("%.1fx", spd))
+        val labels = speedOptions.map { String.format("%.1fx", it) }.toTypedArray()
+        showOverlayListDialog("选择播放速度", labels) { which ->
+            changeSpeed(speedOptions[which])
         }
-        popup.setOnMenuItemClickListener { item ->
-            val spd = item.itemId / 10f
-            changeSpeed(spd)
-            true
-        }
-        popup.setOnDismissListener { requestOverlayFocus(false) }
-        popup.show()
     }
 
     private fun togglePlayMode() {
@@ -1381,78 +1373,114 @@ class FloatingPlayerService : Service(), PerformanceScheduler.PlaybackStateListe
     }
 
     private fun showTrackPicker() {
-        if (currentUnifiedIndex < 0 || currentUnifiedIndex >= unifiedList.size) {
-            Toast.makeText(this, "请先选择一首 MIDI", Toast.LENGTH_SHORT).show()
-            return
-        }
-        val unified = unifiedList[currentUnifiedIndex]
         scope.launch {
             try {
-                var filePath = unified.filePath
-                if (unified.source == "cloud" && unified.cloudMusic != null) {
-                    val cloud = unified.cloudMusic
-                    val localFile = java.io.File("${filesDir.absolutePath}/midi_music/cloud_${cloud.id}_${cloud.name}")
-                    if (localFile.exists()) filePath = localFile.absolutePath
-                }
-                if (filePath.isNullOrBlank()) {
-                    Toast.makeText(this@FloatingPlayerService, "无法读取音乐文件", Toast.LENGTH_SHORT).show()
+                val seq = resolveCurrentSequence()
+                if (seq == null) {
+                    withContext(Dispatchers.Main) {
+                        showOverlayMessageDialog("选择演奏音轨", "请先在列表中选择一首 MIDI 音乐。")
+                    }
                     return@launch
                 }
-                val seq = withContext(Dispatchers.IO) {
-                    currentSequence ?: midiParser.parseMidiFile(filePath)
-                }
                 currentSequence = seq
+                val labels = buildList {
+                    add("全部音轨 (${seq.noteCount} 音)")
+                    seq.tracks.forEach { t ->
+                        add("音轨 ${t.index + 1}（${t.noteCount} 个音符）")
+                    }
+                }.toTypedArray()
                 withContext(Dispatchers.Main) {
-                    requestOverlayFocus(true)
-                    val labels = buildList {
-                        add("全部音轨 (${seq.noteCount} 音)")
-                        seq.tracks.forEach { t ->
-                            add("音轨 ${t.index + 1}（${t.noteCount} 个音符）")
-                        }
-                    }.toTypedArray()
-                    AlertDialog.Builder(this@FloatingPlayerService)
-                        .setTitle("选择演奏音轨")
-                        .setItems(labels) { _, which ->
-                            selectedTrackIndex = if (which == 0) null else seq.tracks[which - 1].index
-                            scheduler.trackFilter = selectedTrackIndex
-                            updateTrackButton()
-                            val label = if (selectedTrackIndex == null) "全部音轨" else "音轨 ${selectedTrackIndex!! + 1}"
-                            updateStatus("已选 $label")
-                        }
-                        .setOnDismissListener { requestOverlayFocus(false) }
-                        .show()
+                    showOverlayListDialog("选择演奏音轨", labels) { which ->
+                        selectedTrackIndex = if (which == 0) null else seq.tracks[which - 1].index
+                        scheduler.trackFilter = selectedTrackIndex
+                        updateTrackButton()
+                        val label = if (selectedTrackIndex == null) "全部音轨" else "音轨 ${selectedTrackIndex!! + 1}"
+                        updateStatus("已选 $label")
+                    }
                 }
             } catch (e: Exception) {
                 withContext(Dispatchers.Main) {
-                    Toast.makeText(this@FloatingPlayerService, "读取音轨失败: ${e.message}", Toast.LENGTH_SHORT).show()
+                    showOverlayMessageDialog("选择演奏音轨", "读取音轨失败: ${e.message}")
                 }
             }
         }
     }
 
+    private suspend fun resolveCurrentSequence(): NoteSequence? {
+        currentSequence?.let { return it }
+        if (currentUnifiedIndex < 0 || currentUnifiedIndex >= unifiedList.size) return null
+        val unified = unifiedList[currentUnifiedIndex]
+        var filePath = unified.filePath
+        if (unified.source == "cloud" && unified.cloudMusic != null) {
+            val cloud = unified.cloudMusic
+            val localFile = java.io.File("${filesDir.absolutePath}/midi_music/cloud_${cloud.id}_${cloud.name}")
+            if (localFile.exists()) filePath = localFile.absolutePath
+        }
+        if (filePath.isNullOrBlank()) return null
+        return withContext(Dispatchers.IO) { midiParser.parseMidiFile(filePath) }
+    }
+
     private fun showLayoutPickerDialog() {
-        requestOverlayFocus(true)
         val items = PianoLayoutType.entries.map { it.label }.toTypedArray()
-        AlertDialog.Builder(this)
-            .setTitle("选择键位方案")
-            .setItems(items) { _, which ->
-                val type = PianoLayoutType.entries[which]
-                val layout = PianoLayouts.getLayout(type)
-                FloatingCalibrationService.start(
-                    this,
-                    SupportedApps.layoutId(type),
-                    layout.keyCount,
-                    type.name,
-                    openTargetApp = false
-                )
-                Toast.makeText(
-                    this,
-                    "已选择 ${type.label}，请在游戏界面点击「开始标定」",
-                    Toast.LENGTH_LONG
-                ).show()
+        showOverlayListDialog("选择键位方案", items) { which ->
+            val type = PianoLayoutType.entries[which]
+            val layout = PianoLayouts.getLayout(type)
+            FloatingCalibrationService.start(
+                this,
+                SupportedApps.layoutId(type),
+                layout.keyCount,
+                type.name,
+                openTargetApp = false
+            )
+            Toast.makeText(
+                this,
+                "已选择 ${type.label}，请在游戏界面点击「开始标定」",
+                Toast.LENGTH_LONG
+            ).show()
+        }
+    }
+
+    private fun overlayDialogContext(): Context =
+        ContextThemeWrapper(this, android.R.style.Theme_Material_Light_Dialog_Alert)
+
+    private fun applyOverlayWindowFlags(window: Window?) {
+        window ?: return
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+            window.setType(WindowManager.LayoutParams.TYPE_APPLICATION_OVERLAY)
+        } else {
+            @Suppress("DEPRECATION")
+            window.setType(WindowManager.LayoutParams.TYPE_SYSTEM_ALERT)
+        }
+        window.clearFlags(
+            WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE or
+                WindowManager.LayoutParams.FLAG_NOT_TOUCHABLE
+        )
+    }
+
+    private fun showOverlayListDialog(title: String, items: Array<String>, onSelect: (Int) -> Unit) {
+        requestOverlayFocus(true)
+        val dialog = AlertDialog.Builder(overlayDialogContext())
+            .setTitle(title)
+            .setItems(items) { d, which ->
+                onSelect(which)
+                d.dismiss()
             }
             .setOnDismissListener { requestOverlayFocus(false) }
-            .show()
+            .create()
+        dialog.setOnShowListener { applyOverlayWindowFlags(dialog.window) }
+        dialog.show()
+    }
+
+    private fun showOverlayMessageDialog(title: String, message: String) {
+        requestOverlayFocus(true)
+        val dialog = AlertDialog.Builder(overlayDialogContext())
+            .setTitle(title)
+            .setMessage(message)
+            .setPositiveButton(android.R.string.ok, null)
+            .setOnDismissListener { requestOverlayFocus(false) }
+            .create()
+        dialog.setOnShowListener { applyOverlayWindowFlags(dialog.window) }
+        dialog.show()
     }
 
     private fun updateTimeDisplay(currentMs: Long, totalMs: Long) {
@@ -1562,19 +1590,19 @@ class FloatingPlayerService : Service(), PerformanceScheduler.PlaybackStateListe
     }
 
     private fun ensureResizeHandle() {
-        val root = floatingView as? android.widget.FrameLayout ?: return
-        if (root.findViewWithTag<View>("resizeHandle") != null) return
+        val dragHandle = floatingView?.findViewById<LinearLayout>(R.id.dragHandle) ?: return
+        if (dragHandle.findViewWithTag<View>("resizeHandle") != null) return
 
         val handle = TextView(this).apply {
             tag = "resizeHandle"
             text = "◢"
-            textSize = 14f
+            textSize = 12f
             setTextColor(0x80FFFFFF.toInt())
-            setPadding(dpToPx(8), dpToPx(8), dpToPx(8), dpToPx(8))
             gravity = Gravity.CENTER
-            layoutParams = android.widget.FrameLayout.LayoutParams(
-                dpToPx(36), dpToPx(36), Gravity.BOTTOM or Gravity.END
-            )
+            isClickable = true
+            layoutParams = LinearLayout.LayoutParams(dpToPx(22), dpToPx(18)).apply {
+                marginEnd = dpToPx(6)
+            }
             setOnTouchListener { _, event ->
                 when (event.action) {
                     MotionEvent.ACTION_DOWN -> {
@@ -1600,7 +1628,7 @@ class FloatingPlayerService : Service(), PerformanceScheduler.PlaybackStateListe
                 }
             }
         }
-        root.addView(handle)
+        dragHandle.addView(handle, 0)
     }
 
     private fun ensureCalibrateButton() {
@@ -1615,6 +1643,8 @@ class FloatingPlayerService : Service(), PerformanceScheduler.PlaybackStateListe
             gravity = Gravity.CENTER
             setTextColor(0xFF00CEC9.toInt())
             setBackgroundResource(R.drawable.btn_speed_bg)
+            isClickable = true
+            isFocusable = true
             layoutParams = LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.MATCH_PARENT, 1f).apply {
                 marginStart = dpToPx(4)
             }
