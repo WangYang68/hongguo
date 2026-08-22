@@ -23,7 +23,9 @@ object SupportedApps {
         TargetApp("layout.LAYOUT_36", "36键·通用横排", 36, 48, "异环、永劫无间 · 每排12半音", false, 3, "LAYOUT_36"),
         TargetApp("layout.LAYOUT_36_SHAPED", "36键·异形", 36, 48, "第五人格、心动小镇 · 图2横排12", false, 3, "LAYOUT_36_SHAPED"),
         TargetApp("layout.LAYOUT_37", "37键·通用", 37, 48, "直线排列 · 上排到C6", false, 3, "LAYOUT_37"),
-        TargetApp("layout.LAYOUT_37_SHAPED", "37键·异形", 37, 48, "心动小镇等 · 上排到C6", false, 3, "LAYOUT_37_SHAPED")
+        TargetApp("layout.LAYOUT_37_SHAPED", "37键·异形", 37, 48, "心动小镇等 · 上排到C6", false, 3, "LAYOUT_37_SHAPED"),
+        TargetApp("layout.LAYOUT_61", "61键", 61, 36, "C2–C7 · 键盘字符标注", false, 1, "LAYOUT_61"),
+        TargetApp("layout.LAYOUT_88", "88键", 88, 24, "C1–B7 · 标准音名标注", false, 1, "LAYOUT_88")
     )
 
     private val packageAliases = mapOf(

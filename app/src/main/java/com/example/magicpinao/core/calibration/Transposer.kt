@@ -26,10 +26,21 @@ object Transposer {
         val keys = layout.getOrderedKeys()
         if (keys.isEmpty()) return null
         return when {
+            layout.type == PianoLayoutType.LAYOUT_61 -> mapRangeFold(midiNote, keys, 36, 96)
+            layout.type == PianoLayoutType.LAYOUT_88 -> mapRangeFold(midiNote, keys, 24, 107)
             layout.hasBlackKeys -> mapChromatic(midiNote, keys)
             layout.type == PianoLayoutType.LAYOUT_15 -> mapSky15(midiNote, keys, keyOffset)
             else -> mapDiatonic(midiNote, keys, keyOffset)
         }
+    }
+
+    /** 61/88：按指定音域折叠，不转调 */
+    private fun mapRangeFold(midiNote: Int, keys: List<KeyPosition>, minNote: Int, maxNote: Int): Int? {
+        var note = midiNote
+        while (note < minNote) note += 12
+        while (note > maxNote) note -= 12
+        keys.indexOfFirst { it.midiNote == note }.takeIf { it >= 0 }?.let { return it }
+        return keys.minByOrNull { kotlin.math.abs(it.midiNote - note) }?.let { keys.indexOf(it) }
     }
 
     /** 36/37：不转调，不处理半音，只把音高折进音域 */

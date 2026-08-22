@@ -14,7 +14,9 @@ enum class PianoLayoutType(val label: String, val keyCount: Int, val shortLabel:
     LAYOUT_36("36键·通用横排", 36, "36横"),
     LAYOUT_36_SHAPED("36键·异形", 36, "36异"),
     LAYOUT_37("37键·通用", 37, "37横"),
-    LAYOUT_37_SHAPED("37键·异形", 37, "37异");
+    LAYOUT_37_SHAPED("37键·异形", 37, "37异"),
+    LAYOUT_61("61键", 61, "61"),
+    LAYOUT_88("88键", 88, "88");
 
     companion object {
         fun fromName(name: String?): PianoLayoutType {
@@ -47,7 +49,9 @@ data class PianoLayout(
     val keys: List<KeyPosition>,
     val rowLabels: List<String>,
     /** 黑键是否像钢琴那样抬高半排；横排 12 键时为 false */
-    val staggerBlackKeys: Boolean = false
+    val staggerBlackKeys: Boolean = false,
+    /** 黑键相对白键的抬高比例（相对行高） */
+    val blackKeyLiftRatio: Float = 0.28f
 ) {
     fun getRowKeys(row: Int): List<KeyPosition> = keys.filter { it.row == row }
 
@@ -59,6 +63,26 @@ data class PianoLayout(
 
     /** 三排共用的列数：以上排最右键为准，避免上排多一键时压缩前面间距。 */
     fun sharedColumnCount(): Float = (keys.maxOfOrNull { it.visualCol } ?: 0f) + 1f
+
+    /**
+     * 计算键在标定框内的水平比例 [0,1]。
+     * 异形三排：前 7 列（白键列）固定按 7 列网格对齐，多出的键追加在右侧不压缩前面。
+     */
+    fun xRatio(visualCol: Float): Float {
+        val maxCol = keys.maxOfOrNull { it.visualCol } ?: 0f
+        val pianoSpan = 7f
+        if (type == PianoLayoutType.LAYOUT_61 || type == PianoLayoutType.LAYOUT_88) {
+            return (visualCol + 0.5f) / (maxCol + 1f).coerceAtLeast(1f)
+        }
+        if (maxCol > 6f && visualCol <= 6f) {
+            return (visualCol + 0.5f) / pianoSpan
+        }
+        if (maxCol > 6f && visualCol > 6f) {
+            val extraSpan = maxCol - 6f
+            return (pianoSpan + (visualCol - 7f) + 0.5f) / (pianoSpan + extraSpan)
+        }
+        return (visualCol + 0.5f) / (maxCol + 1f).coerceAtLeast(1f)
+    }
 }
 
 object PianoLayouts {
@@ -217,6 +241,7 @@ object PianoLayouts {
         rows = 3,
         hasBlackKeys = true,
         staggerBlackKeys = true,
+        blackKeyLiftRatio = 0.48f,
         rowLabels = listOf("异形36 低音 C3-B3", "中音 C4-B4", "高音 C5-B5"),
         keys = buildList {
             addPianoOctave(this, 0, 3)
@@ -231,6 +256,7 @@ object PianoLayouts {
         rows = 3,
         hasBlackKeys = true,
         staggerBlackKeys = true,
+        blackKeyLiftRatio = 0.48f,
         rowLabels = listOf("异形37 低音 C3-B3", "中音 C4-B4", "高音 C5-C6"),
         keys = buildList {
             addPianoOctave(this, 0, 3)
@@ -244,6 +270,71 @@ object PianoLayouts {
     val LAYOUT_37 = linear37(PianoLayoutType.LAYOUT_37, "通用37")
     val LAYOUT_37_SHAPED = shaped37()
 
+    /** 61键白键标注（C2–C7，图3） */
+    private const val LABEL_61_WHITE = "1234567890qwertyuiopasdfghjklzxcvbnm"
+    /** 61键黑键标注（图3） */
+    private const val LABEL_61_BLACK = "!@\$%^*(QWETYOIPSDGHJLZCVB"
+
+    private fun midiNoteName(midi: Int): String {
+        val names = arrayOf("C", "C#", "D", "D#", "E", "F", "F#", "G", "G#", "A", "A#", "B")
+        val octave = midi / 12 - 1
+        return "${names[midi % 12]}$octave"
+    }
+
+    private fun buildWidePiano(
+        type: PianoLayoutType,
+        startMidi: Int,
+        endMidi: Int,
+        labelOf: (midi: Int, isBlack: Boolean) -> String
+    ): PianoLayout {
+        val keys = mutableListOf<KeyPosition>()
+        var chromIdx = 0
+        for (midi in startMidi..endMidi) {
+            val semi = midi % 12
+            val octaveInLayout = chromIdx / 12
+            val visual = octaveInLayout * 7f + PIANO_VISUAL_COL[semi]
+            val isBlack = semi in listOf(1, 3, 6, 8, 10)
+            keys.add(
+                KeyPosition(
+                    row = 0,
+                    col = chromIdx,
+                    isBlack = isBlack,
+                    midiNote = midi,
+                    label = labelOf(midi, isBlack),
+                    visualCol = visual
+                )
+            )
+            chromIdx++
+        }
+        return PianoLayout(
+            type = type,
+            keyCount = keys.size,
+            rows = 1,
+            hasBlackKeys = true,
+            staggerBlackKeys = true,
+            blackKeyLiftRatio = 0.48f,
+            rowLabels = listOf("${type.label} ${midiNoteName(startMidi)}-${midiNoteName(endMidi)}"),
+            keys = keys
+        )
+    }
+
+    /** 61键：C2–C7，键盘字符标注 */
+    val LAYOUT_61: PianoLayout = run {
+        var whiteIdx = 0
+        var blackIdx = 0
+        buildWidePiano(PianoLayoutType.LAYOUT_61, 36, 96) { _, isBlack ->
+            if (isBlack) LABEL_61_BLACK[blackIdx++].toString()
+            else LABEL_61_WHITE[whiteIdx++].toString()
+        }
+    }
+
+    /** 88键：标准钢琴 A0–C8，音名标注；播放时折叠到 C1–B7 */
+    val LAYOUT_88: PianoLayout = buildWidePiano(
+        type = PianoLayoutType.LAYOUT_88,
+        startMidi = 21,
+        endMidi = 108
+    ) { midi, _ -> midiNoteName(midi) }
+
     fun getLayout(type: PianoLayoutType): PianoLayout = when (type) {
         PianoLayoutType.LAYOUT_15 -> LAYOUT_15
         PianoLayoutType.LAYOUT_21 -> LAYOUT_21
@@ -253,10 +344,14 @@ object PianoLayouts {
         PianoLayoutType.LAYOUT_36_SHAPED -> LAYOUT_36_SHAPED
         PianoLayoutType.LAYOUT_37 -> LAYOUT_37
         PianoLayoutType.LAYOUT_37_SHAPED -> LAYOUT_37_SHAPED
+        PianoLayoutType.LAYOUT_61 -> LAYOUT_61
+        PianoLayoutType.LAYOUT_88 -> LAYOUT_88
     }
 
     fun inferLayout(keyCount: Int, appName: String): PianoLayout {
         return when {
+            keyCount == 61 -> LAYOUT_61
+            keyCount == 88 -> LAYOUT_88
             keyCount == 15 -> LAYOUT_15
             keyCount == 22 -> LAYOUT_22
             keyCount == 37 && appName.contains("异") -> LAYOUT_37_SHAPED

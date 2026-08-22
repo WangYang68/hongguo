@@ -59,6 +59,8 @@ class CoordinateRepository(private val context: Context) {
             "LAYOUT_22" -> 22
             "LAYOUT_36", "LAYOUT_36_PIANO", "LAYOUT_36_SHAPED" -> 36
             "LAYOUT_37", "LAYOUT_37_SHAPED" -> 37
+            "LAYOUT_61" -> 61
+            "LAYOUT_88" -> 88
             "LAYOUT_21", "LAYOUT_21_GUITAR" -> 21
             else -> null
         }

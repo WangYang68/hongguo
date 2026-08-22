@@ -1229,7 +1229,7 @@ private fun AppSelectorDialog(
             ) {
                 item {
                     Text(
-                        "按游戏钢琴键位选择 15 / 21 / 22 / 36 / 37 键。只需标定过对应键位坐标即可播放。下滑可查看全部方案。",
+                        "按游戏钢琴键位选择 15 / 21 / 22 / 36 / 37 / 61 / 88 键。只需标定过对应键位坐标即可播放。下滑可查看全部方案。",
                         color = TextHint,
                         style = MaterialTheme.typography.bodySmall
                     )

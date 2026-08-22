@@ -881,12 +881,11 @@ class FloatingCalibrationService : Service() {
         val kr = dm.widthPixels * 0.94f
         val keys = pianoLayout.getOrderedKeys()
         val rh = (kb - kt) / pianoLayout.rows
-        val blackLift = rh * 0.28f
-        val cols = pianoLayout.sharedColumnCount().coerceAtLeast(1f)
+        val blackLift = rh * pianoLayout.blackKeyLiftRatio
         keys.forEachIndexed { i, k ->
             val yBase = kb - rh * (k.row + 0.5f)
             val y = if (pianoLayout.staggerBlackKeys && k.isBlack) yBase - blackLift else yBase
-            val x = kl + (kr - kl) * ((k.visualCol + 0.5f) / cols)
+            val x = kl + (kr - kl) * pianoLayout.xRatio(k.visualCol)
             markers.add(KeyMarker(i, x, y, k.label, k.isBlack && pianoLayout.staggerBlackKeys))
         }
     }
