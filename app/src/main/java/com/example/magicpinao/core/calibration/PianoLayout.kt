@@ -66,21 +66,11 @@ data class PianoLayout(
 
     /**
      * 计算键在标定框内的水平比例 [0,1]。
-     * 异形三排：前 7 列（白键列）固定按 7 列网格对齐，多出的键追加在右侧不压缩前面。
+     * 三排共用同一列网格：白键 0–6 竖直对齐，黑键在缝隙（0.5/1.5…），
+     * 上排多出的高音 C（visualCol=7）落在最右一列，不压缩前面。
      */
     fun xRatio(visualCol: Float): Float {
         val maxCol = keys.maxOfOrNull { it.visualCol } ?: 0f
-        val pianoSpan = 7f
-        if (type == PianoLayoutType.LAYOUT_61 || type == PianoLayoutType.LAYOUT_88) {
-            return (visualCol + 0.5f) / (maxCol + 1f).coerceAtLeast(1f)
-        }
-        if (maxCol > 6f && visualCol <= 6f) {
-            return (visualCol + 0.5f) / pianoSpan
-        }
-        if (maxCol > 6f && visualCol > 6f) {
-            val extraSpan = maxCol - 6f
-            return (pianoSpan + (visualCol - 7f) + 0.5f) / (pianoSpan + extraSpan)
-        }
         return (visualCol + 0.5f) / (maxCol + 1f).coerceAtLeast(1f)
     }
 }
@@ -280,7 +270,8 @@ object PianoLayouts {
         rows = 3,
         hasBlackKeys = true,
         staggerBlackKeys = true,
-        blackKeyLiftRatio = 0.48f,
+        // 黑键落在白键上缘附近（每排都抬高，与游戏界面一致）
+        blackKeyLiftRatio = 0.38f,
         rowLabels = listOf("异形37 低音 C3-B3", "中音 C4-B4", "高音 C5-C6"),
         keys = buildList {
             addShaped37PianoOctave(this, 0, 3)
