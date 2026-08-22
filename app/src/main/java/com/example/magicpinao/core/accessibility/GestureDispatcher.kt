@@ -40,15 +40,12 @@ object GestureDispatcher {
         }
 
         val maxDur = try {
-            GestureDescription.getMaxStrokeDuration()
+            GestureDescription.getMaxGestureDuration()
         } catch (_: Throwable) {
             60_000L
         }
-        val minDur = try {
-            GestureDescription.getMinStrokeDuration().coerceAtLeast(1L)
-        } catch (_: Throwable) {
-            1L
-        }
+        // getMinStrokeDuration 不是公开 API，最小笔画时长固定为 1ms
+        val minDur = 1L
 
         mainHandler.post {
             try {

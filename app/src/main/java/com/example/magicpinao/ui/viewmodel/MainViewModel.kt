@@ -11,6 +11,7 @@ import com.example.magicpinao.core.auth.VipValidity
 import com.example.magicpinao.core.coordinate.CoordinateManager
 import com.example.magicpinao.core.data.CoordinateRepository
 import com.example.magicpinao.core.data.MusicEntity
+import com.example.magicpinao.core.data.MusicRepository
 import com.example.magicpinao.core.data.PlaylistItemEntity
 import com.example.magicpinao.core.data.PlaylistRepository
 import com.example.magicpinao.core.midi.MidiParser

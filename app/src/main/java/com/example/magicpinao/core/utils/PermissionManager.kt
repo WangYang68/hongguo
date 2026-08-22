@@ -58,7 +58,8 @@ class PermissionManager(private val context: Context) {
 
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
             try {
-                val details = Intent(Settings.ACTION_ACCESSIBILITY_DETAILS_SETTINGS).apply {
+                // 该 SDK 的 android.jar 未导出此常量，直接使用 action 字符串
+                val details = Intent("android.settings.ACCESSIBILITY_DETAILS_SETTINGS").apply {
                     addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
                     putExtra(Intent.EXTRA_COMPONENT_NAME, component)
                     putExtra("android.intent.extra.COMPONENT_NAME", flatten)
