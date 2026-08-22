@@ -9,8 +9,8 @@ import androidx.room.RoomDatabase
  * 应用数据库
  */
 @Database(
-    entities = [MusicEntity::class, CoordinateEntity::class],
-    version = 2,
+    entities = [MusicEntity::class, CoordinateEntity::class, PlaylistItemEntity::class],
+    version = 3,
     exportSchema = false
 )
 abstract class AppDatabase : RoomDatabase() {
@@ -18,6 +18,8 @@ abstract class AppDatabase : RoomDatabase() {
     abstract fun musicDao(): MusicDao
     
     abstract fun coordinateDao(): CoordinateDao
+
+    abstract fun playlistDao(): PlaylistDao
     
     companion object {
         @Volatile

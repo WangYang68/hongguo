@@ -37,8 +37,11 @@ class MidiParser {
             val division = readShort(header, 12)
 
             val rawEvents = mutableListOf<RawMidiEvent>()
+            val trackNoteCounts = IntArray(numTracks.coerceAtLeast(1))
             for (i in 0 until numTracks) {
-                rawEvents.addAll(parseTrack(inputStream))
+                val trackRaw = parseTrack(inputStream)
+                trackNoteCounts[i] = trackRaw.count { it.type == RawEventType.NOTE_ON && it.velocity > 0 }
+                rawEvents.addAll(trackRaw.map { it.copy(track = i) })
             }
 
             val converted = attachNoteDurations(convertTicksToMs(rawEvents, division))
@@ -46,13 +49,15 @@ class MidiParser {
             val duration = sorted.maxByOrNull { it.timestamp }?.timestamp ?: 0L
             val noteCount = sorted.count { it is NoteOnEvent }
             val bpm = computeAverageBpm(rawEvents)
+            val tracks = trackNoteCounts.mapIndexed { idx, count -> TrackInfo(idx, count) }
 
             return NoteSequence(
                 events = sorted,
                 duration = duration,
                 bpm = bpm,
                 timeSignature = "4/4",
-                noteCount = noteCount
+                noteCount = noteCount,
+                tracks = tracks
             )
         } catch (e: Exception) {
             throw RuntimeException("Error parsing MIDI file", e)
@@ -179,7 +184,7 @@ class MidiParser {
                     result.add(KeySignatureEvent(event.tick, lastMs.roundToLong(), event.pitch, offset))
                 }
                 RawEventType.NOTE_ON -> result.add(
-                    NoteOnEvent(event.tick, lastMs.roundToLong(), event.channel, event.pitch, event.velocity)
+                    NoteOnEvent(event.tick, lastMs.roundToLong(), event.channel, event.pitch, event.velocity, track = event.track)
                 )
                 RawEventType.NOTE_OFF -> result.add(
                     NoteOffEvent(event.tick, lastMs.roundToLong(), event.channel, event.pitch, event.velocity)
@@ -293,7 +298,8 @@ private data class RawMidiEvent(
     val type: RawEventType,
     val channel: Int,
     val pitch: Int,
-    val velocity: Int
+    val velocity: Int,
+    val track: Int = 0
 )
 
 data class MidiFileInfo(

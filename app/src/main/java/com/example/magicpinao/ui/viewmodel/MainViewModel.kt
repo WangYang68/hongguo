@@ -11,7 +11,8 @@ import com.example.magicpinao.core.auth.VipValidity
 import com.example.magicpinao.core.coordinate.CoordinateManager
 import com.example.magicpinao.core.data.CoordinateRepository
 import com.example.magicpinao.core.data.MusicEntity
-import com.example.magicpinao.core.data.MusicRepository
+import com.example.magicpinao.core.data.PlaylistItemEntity
+import com.example.magicpinao.core.data.PlaylistRepository
 import com.example.magicpinao.core.midi.MidiParser
 import com.example.magicpinao.core.midi.MidiTestUtils
 import com.example.magicpinao.core.midi.NoteSequence
@@ -35,6 +36,7 @@ import kotlinx.coroutines.withContext
 class MainViewModel(application: Application) : AndroidViewModel(application) {
 
     private val musicRepository = MusicRepository(application)
+    private val playlistRepository = PlaylistRepository(application)
     private val coordinateRepository = CoordinateRepository(application)
     private val permissionManager = PermissionManager(application)
     private val midiParser = MidiParser()
@@ -50,6 +52,9 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     // ===== 本地音乐 =====
     private val _musicList = MutableStateFlow<List<MusicEntity>>(emptyList())
     val musicList: StateFlow<List<MusicEntity>> = _musicList.asStateFlow()
+
+    private val _playlist = MutableStateFlow<List<PlaylistItemEntity>>(emptyList())
+    val playlist: StateFlow<List<PlaylistItemEntity>> = _playlist.asStateFlow()
 
     private val _searchQuery = MutableStateFlow("")
     val searchQuery: StateFlow<String> = _searchQuery.asStateFlow()
@@ -141,6 +146,12 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                     }
                 }
                 .collect { music -> _musicList.value = music }
+        }
+
+        viewModelScope.launch {
+            playlistRepository.observeAll().collect { items ->
+                _playlist.value = items
+            }
         }
 
         scanLocalMidiFiles()
@@ -247,6 +258,39 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                 stopPlayback()
             }
             _uiState.value = _uiState.value.copy(errorMessage = "已删除「${music.title}」")
+        }
+    }
+
+    fun addLocalToPlaylist(music: MusicEntity) {
+        viewModelScope.launch {
+            playlistRepository.addLocalMusic(music).fold(
+                onSuccess = {
+                    _uiState.value = _uiState.value.copy(errorMessage = "已加入播放列表：${music.title}")
+                },
+                onFailure = {
+                    _uiState.value = _uiState.value.copy(errorMessage = it.message ?: "添加失败")
+                }
+            )
+        }
+    }
+
+    fun addCloudToPlaylist(music: MusicItem) {
+        viewModelScope.launch {
+            playlistRepository.addCloudMusic(music).fold(
+                onSuccess = {
+                    _uiState.value = _uiState.value.copy(errorMessage = "已加入播放列表：${music.name}")
+                },
+                onFailure = {
+                    _uiState.value = _uiState.value.copy(errorMessage = it.message ?: "添加失败")
+                }
+            )
+        }
+    }
+
+    fun removeFromPlaylist(item: PlaylistItemEntity) {
+        viewModelScope.launch {
+            withContext(Dispatchers.IO) { playlistRepository.remove(item) }
+            _uiState.value = _uiState.value.copy(errorMessage = "已从播放列表移除「${item.title}」")
         }
     }
 

@@ -9,7 +9,8 @@ data class NoteSequence(
     val duration: Long,           // 总时长（毫秒）
     val bpm: Double,              // 速度
     val timeSignature: String,    // 拍号（如 "4/4"）
-    val noteCount: Int            // 音符总数
+    val noteCount: Int,           // 音符总数
+    val tracks: List<TrackInfo> = emptyList()
 ) {
     /**
      * 获取所有 NoteOn 事件（用于演奏）
@@ -36,3 +37,9 @@ data class NoteSequence(
         return getNoteOnEvents().groupBy { it.timestamp }
     }
 }
+
+/** 单条 MIDI 音轨统计 */
+data class TrackInfo(
+    val index: Int,
+    val noteCount: Int
+)

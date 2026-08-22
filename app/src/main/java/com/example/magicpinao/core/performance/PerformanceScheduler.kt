@@ -61,6 +61,12 @@ class PerformanceScheduler {
     var speed: Float = 1.0f
         private set
 
+    /** false=长按(正常时值)，true=短按(缩短按键时长) */
+    var shortPressMode: Boolean = false
+
+    /** null=全部音轨；否则只演奏指定音轨 */
+    var trackFilter: Int? = null
+
     private val stateListeners = mutableListOf<PlaybackStateListener>()
 
     fun addStateListener(listener: PlaybackStateListener) {
@@ -118,6 +124,7 @@ class PerformanceScheduler {
 
         val events = sequence.events
             .filterIsInstance<NoteOnEvent>()
+            .filter { trackFilter == null || it.track == trackFilter }
             .mapNotNull { e ->
                 while (keyIdx < keyChanges.size && keyChanges[keyIdx].timestamp <= e.timestamp) {
                     keyOffset = keyChanges[keyIdx].offset
@@ -330,7 +337,11 @@ class PerformanceScheduler {
                     if (evt.keyIndex in coords.indices) {
                         val c = coords[evt.keyIndex]
                         val midiDur = evt.scaledDurationMs(speed)
-                        val tapDur = minOf(midiDur, (gap - 8L).coerceAtLeast(20L)).coerceIn(20L, 320L)
+                        val tapDur = if (shortPressMode) {
+                            35L
+                        } else {
+                            minOf(midiDur, (gap - 8L).coerceAtLeast(20L)).coerceIn(20L, 320L)
+                        }
                         GestureDispatcher.TapPoint(c.centerX, c.centerY, tapDur)
                     } else {
                         failCount++

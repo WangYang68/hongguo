@@ -35,6 +35,7 @@ import coil.compose.AsyncImage
 import com.example.magicpinao.core.accessibility.SupportedApps
 import com.example.magicpinao.core.auth.AuthManager
 import com.example.magicpinao.core.data.MusicEntity
+import com.example.magicpinao.core.data.PlaylistItemEntity
 import com.example.magicpinao.core.network.MusicItem
 import com.example.magicpinao.ui.theme.*
 import com.example.magicpinao.ui.viewmodel.*
@@ -43,7 +44,7 @@ import com.example.magicpinao.ui.viewmodel.*
 enum class HomeTab(val label: String, val icon: String) {
     LOCAL("本地音乐", "📁"),
     CLOUD("云音乐", "☁️"),
-    PROFILE("我的", "👤")
+    PLAYLIST("播放列表", "🎵")
 }
 
 @OptIn(ExperimentalMaterial3Api::class)
@@ -63,6 +64,7 @@ fun HomeScreen(
     val selectedTag by viewModel.selectedTag.collectAsState()
     val cloudSearchQuery by viewModel.cloudSearchQuery.collectAsState()
     val isCloudLoading by viewModel.isCloudLoading.collectAsState()
+    val playlist by viewModel.playlist.collectAsState()
 
     var selectedTab by remember { mutableStateOf(HomeTab.LOCAL) }
 
@@ -318,7 +320,8 @@ fun HomeScreen(
                             musicList = musicList,
                             uiState = uiState,
                             onMusicClick = onMusicClick,
-                            onDeleteClick = { pendingDeleteMusic = it }
+                            onDeleteClick = { pendingDeleteMusic = it },
+                            onAddClick = { viewModel.addLocalToPlaylist(it) }
                         )
                     }
                 }
@@ -350,20 +353,26 @@ fun HomeScreen(
                             musicList = cloudMusicList,
                             isLoading = isCloudLoading,
                             onMusicClick = { music ->
-                                // 先记下曲目，便于 VIP 激活后自动重试；校验在 playCloudMusic 内完成
                                 pendingCloudMusic = music
                                 onCloudMusicClick(music)
                             },
+                            onAddClick = { viewModel.addCloudToPlaylist(it) },
                             onLoadMore = { viewModel.loadMoreCloudMusic() }
                         )
                     }
                 }
 
-                HomeTab.PROFILE -> {
-                    // 点击"我的"导航到Profile页面
-                    LaunchedEffect(selectedTab) {
-                        onNavigateToProfile()
-                        selectedTab = HomeTab.LOCAL
+                HomeTab.PLAYLIST -> {
+                    if (playlist.isEmpty()) {
+                        EmptyStateView(
+                            message = "播放列表为空",
+                            hint = "在本地音乐或云音乐中点击 + 添加到播放列表"
+                        )
+                    } else {
+                        PlaylistList(
+                            items = playlist,
+                            onRemoveClick = { viewModel.removeFromPlaylist(it) }
+                        )
                     }
                 }
             }
@@ -371,7 +380,7 @@ fun HomeScreen(
 
         // 播放控制条（本地音乐）
         AnimatedVisibility(
-            visible = uiState.currentMusicId != null && selectedTab != HomeTab.PROFILE,
+            visible = uiState.currentMusicId != null,
             enter = slideInVertically(initialOffsetY = { it }) + fadeIn(),
             exit = slideOutVertically(targetOffsetY = { it }) + fadeOut(),
             modifier = Modifier.align(Alignment.BottomCenter)
@@ -404,13 +413,7 @@ fun HomeScreen(
                     Column(
                         horizontalAlignment = Alignment.CenterHorizontally,
                         modifier = Modifier
-                            .clickable {
-                                if (tab == HomeTab.PROFILE) {
-                                    onNavigateToProfile()
-                                } else {
-                                    selectedTab = tab
-                                }
-                            }
+                            .clickable { selectedTab = tab }
                             .padding(horizontal = 24.dp, vertical = 4.dp)
                     ) {
                         Text(tab.icon, fontSize = 24.sp)
@@ -574,7 +577,8 @@ private fun LocalMusicList(
     musicList: List<MusicEntity>,
     uiState: MainUiState,
     onMusicClick: (MusicEntity) -> Unit,
-    onDeleteClick: (MusicEntity) -> Unit
+    onDeleteClick: (MusicEntity) -> Unit,
+    onAddClick: (MusicEntity) -> Unit
 ) {
     LazyColumn(
         modifier = Modifier.fillMaxSize(),
@@ -587,8 +591,55 @@ private fun LocalMusicList(
                 isCurrentlyPlaying = uiState.currentMusicId == music.id,
                 isPaused = uiState.currentMusicId == music.id && !uiState.isPlaying,
                 onClick = { onMusicClick(music) },
-                onDeleteClick = { onDeleteClick(music) }
+                onDeleteClick = { onDeleteClick(music) },
+                onAddClick = { onAddClick(music) }
             )
+        }
+    }
+}
+
+@Composable
+private fun PlaylistList(
+    items: List<PlaylistItemEntity>,
+    onRemoveClick: (PlaylistItemEntity) -> Unit
+) {
+    LazyColumn(
+        modifier = Modifier.fillMaxSize(),
+        contentPadding = PaddingValues(start = 16.dp, end = 16.dp, top = 8.dp, bottom = 80.dp),
+        verticalArrangement = Arrangement.spacedBy(10.dp)
+    ) {
+        items(items, key = { it.id }) { item ->
+            Card(
+                modifier = Modifier.fillMaxWidth(),
+                colors = CardDefaults.cardColors(containerColor = SurfaceDark),
+                shape = RoundedCornerShape(16.dp)
+            ) {
+                Row(
+                    modifier = Modifier.padding(14.dp).fillMaxWidth(),
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.SpaceBetween
+                ) {
+                    Column(modifier = Modifier.weight(1f)) {
+                        Text(
+                            text = item.title,
+                            style = MaterialTheme.typography.titleMedium,
+                            color = TextPrimary,
+                            fontWeight = FontWeight.Bold,
+                            maxLines = 2,
+                            overflow = TextOverflow.Ellipsis
+                        )
+                        Spacer(modifier = Modifier.height(4.dp))
+                        Text(
+                            text = if (item.source == "cloud") "☁️ 云音乐" else "📁 本地音乐",
+                            style = MaterialTheme.typography.labelSmall,
+                            color = PrimaryPurpleLight
+                        )
+                    }
+                    IconButton(onClick = { onRemoveClick(item) }) {
+                        Text("−", color = ErrorRed, fontSize = 22.sp, fontWeight = FontWeight.Bold)
+                    }
+                }
+            }
         }
     }
 }
@@ -598,6 +649,7 @@ private fun CloudMusicList(
     musicList: List<MusicItem>,
     isLoading: Boolean,
     onMusicClick: (MusicItem) -> Unit,
+    onAddClick: (MusicItem) -> Unit,
     onLoadMore: () -> Unit
 ) {
     val listState = rememberLazyListState()
@@ -618,7 +670,8 @@ private fun CloudMusicList(
         items(musicList, key = { "cloud_${it.id}" }) { music ->
             CloudMusicCard(
                 music = music,
-                onClick = { onMusicClick(music) }
+                onClick = { onMusicClick(music) },
+                onAddClick = { onAddClick(music) }
             )
         }
         if (isLoading) {
@@ -639,7 +692,7 @@ private fun CloudMusicList(
 }
 
 @Composable
-private fun CloudMusicCard(music: MusicItem, onClick: () -> Unit) {
+private fun CloudMusicCard(music: MusicItem, onClick: () -> Unit, onAddClick: () -> Unit) {
     Card(
         modifier = Modifier.fillMaxWidth().clickable(onClick = onClick),
         colors = CardDefaults.cardColors(containerColor = SurfaceDark),
@@ -704,6 +757,9 @@ private fun CloudMusicCard(music: MusicItem, onClick: () -> Unit) {
                 }
             }
 
+            IconButton(onClick = onAddClick) {
+                Icon(Icons.Default.Add, contentDescription = "加入播放列表", tint = SecondaryCyan, modifier = Modifier.size(22.dp))
+            }
             Surface(
                 onClick = onClick, shape = CircleShape,
                 color = PrimaryPurple.copy(alpha = 0.3f)
@@ -927,7 +983,8 @@ private fun MusicCard(
     isCurrentlyPlaying: Boolean,
     isPaused: Boolean = false,
     onClick: () -> Unit,
-    onDeleteClick: () -> Unit
+    onDeleteClick: () -> Unit,
+    onAddClick: () -> Unit
 ) {
     val tags = remember(music.tags) { music.getTagList() }
     val active = isCurrentlyPlaying
@@ -1000,6 +1057,9 @@ private fun MusicCard(
                 }
             }
 
+            IconButton(onClick = onAddClick) {
+                Icon(Icons.Default.Add, contentDescription = "加入播放列表", tint = SecondaryCyan, modifier = Modifier.size(20.dp))
+            }
             IconButton(onClick = onDeleteClick) {
                 Icon(
                     Icons.Default.Delete,

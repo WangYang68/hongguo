@@ -20,16 +20,9 @@
             android:id="@+id/dragHandle"
             android:layout_width="match_parent"
             android:layout_height="wrap_content"
-            android:gravity="center_vertical"
+            android:gravity="center_vertical|end"
             android:orientation="horizontal"
             android:layout_marginBottom="4dp">
-
-            <View
-                android:layout_width="0dp"
-                android:layout_height="3dp"
-                android:layout_weight="1"
-                android:background="@drawable/player_handle_bg"
-                android:layout_gravity="center" />
 
             <TextView
                 android:id="@+id/btnCollapse"
@@ -41,7 +34,7 @@
                 android:textSize="11sp"
                 android:clickable="true"
                 android:focusable="true"
-                android:layout_marginStart="6dp" />
+                android:layout_marginEnd="4dp" />
 
             <TextView
                 android:id="@+id/btnClose"
@@ -52,8 +45,7 @@
                 android:textColor="#FF7675"
                 android:textSize="11sp"
                 android:clickable="true"
-                android:focusable="true"
-                android:layout_marginStart="2dp" />
+                android:focusable="true" />
         </LinearLayout>
 
         <LinearLayout
@@ -192,60 +184,70 @@
             </LinearLayout>
         </LinearLayout>
 
-        <!-- 速度 + 播放 同一行，压低高度 -->
+        <LinearLayout
+            android:layout_width="match_parent"
+            android:layout_height="26dp"
+            android:orientation="horizontal"
+            android:gravity="center_vertical"
+            android:layout_marginBottom="3dp">
+
+            <TextView
+                android:id="@+id/btnSpeedSelect"
+                android:layout_width="0dp" android:layout_height="match_parent"
+                android:layout_weight="1.1"
+                android:gravity="center"
+                android:background="@drawable/btn_speed_active_bg"
+                android:text="1.0x ▼"
+                android:textColor="#FFFFFF" android:textSize="9sp" android:textStyle="bold"
+                android:clickable="true" android:focusable="true" />
+
+            <TextView
+                android:id="@+id/btnPlayMode"
+                android:layout_width="0dp" android:layout_height="match_parent"
+                android:layout_weight="1"
+                android:gravity="center"
+                android:background="@drawable/btn_speed_bg"
+                android:text="单首"
+                android:textColor="#80FFFFFF" android:textSize="9sp"
+                android:clickable="true" android:focusable="true"
+                android:layout_marginStart="2dp" />
+
+            <TextView
+                android:id="@+id/btnPressMode"
+                android:layout_width="0dp" android:layout_height="match_parent"
+                android:layout_weight="1"
+                android:gravity="center"
+                android:background="@drawable/btn_speed_active_bg"
+                android:text="长按"
+                android:textColor="#FFFFFF" android:textSize="9sp"
+                android:clickable="true" android:focusable="true"
+                android:layout_marginStart="2dp" />
+
+            <TextView
+                android:id="@+id/btnTrackSelect"
+                android:layout_width="0dp" android:layout_height="match_parent"
+                android:layout_weight="0.9"
+                android:gravity="center"
+                android:background="@drawable/btn_speed_bg"
+                android:text="单音"
+                android:textColor="#80FFFFFF" android:textSize="9sp"
+                android:clickable="true" android:focusable="true"
+                android:layout_marginStart="2dp" />
+        </LinearLayout>
+
         <LinearLayout
             android:layout_width="match_parent"
             android:layout_height="26dp"
             android:orientation="horizontal"
             android:gravity="center_vertical">
 
-            <TextView
-                android:id="@+id/btnSpeed05"
-                android:layout_width="0dp" android:layout_height="match_parent"
-                android:layout_weight="1"
-                android:gravity="center"
-                android:background="@drawable/btn_speed_bg"
-                android:text="0.5x" android:textColor="#80FFFFFF" android:textSize="9sp"
-                android:clickable="true" android:focusable="true" />
-
-            <TextView
-                android:id="@+id/btnSpeed1"
-                android:layout_width="0dp" android:layout_height="match_parent"
-                android:layout_weight="1"
-                android:gravity="center"
-                android:background="@drawable/btn_speed_active_bg"
-                android:text="1x" android:textColor="#FFFFFF" android:textSize="9sp" android:textStyle="bold"
-                android:clickable="true" android:focusable="true"
-                android:layout_marginStart="2dp" />
-
-            <TextView
-                android:id="@+id/btnSpeed15"
-                android:layout_width="0dp" android:layout_height="match_parent"
-                android:layout_weight="1"
-                android:gravity="center"
-                android:background="@drawable/btn_speed_bg"
-                android:text="1.5x" android:textColor="#80FFFFFF" android:textSize="9sp"
-                android:clickable="true" android:focusable="true"
-                android:layout_marginStart="2dp" />
-
-            <TextView
-                android:id="@+id/btnSpeed2"
-                android:layout_width="0dp" android:layout_height="match_parent"
-                android:layout_weight="1"
-                android:gravity="center"
-                android:background="@drawable/btn_speed_bg"
-                android:text="2x" android:textColor="#80FFFFFF" android:textSize="9sp"
-                android:clickable="true" android:focusable="true"
-                android:layout_marginStart="2dp" />
-
             <LinearLayout
                 android:id="@+id/btnPauseResume"
                 android:layout_width="0dp" android:layout_height="match_parent"
-                android:layout_weight="1.35"
+                android:layout_weight="1"
                 android:gravity="center"
                 android:background="@drawable/btn_play_bg"
-                android:clickable="true" android:focusable="true"
-                android:layout_marginStart="6dp">
+                android:clickable="true" android:focusable="true">
 
                 <TextView
                     android:id="@+id/btnPauseResumeIcon"
@@ -257,11 +259,11 @@
             <LinearLayout
                 android:id="@+id/btnStop"
                 android:layout_width="0dp" android:layout_height="match_parent"
-                android:layout_weight="1.1"
+                android:layout_weight="1"
                 android:gravity="center"
                 android:background="@drawable/btn_stop_bg"
                 android:clickable="true" android:focusable="true"
-                android:layout_marginStart="3dp">
+                android:layout_marginStart="4dp">
 
                 <TextView
                     android:layout_width="wrap_content" android:layout_height="wrap_content"

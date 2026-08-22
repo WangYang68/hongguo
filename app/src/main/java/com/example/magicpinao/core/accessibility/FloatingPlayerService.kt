@@ -1,5 +1,6 @@
 package com.example.magicpinao.core.accessibility
 
+import android.app.AlertDialog
 import android.app.NotificationChannel
 import android.app.NotificationManager
 import android.app.Service
@@ -30,7 +31,11 @@ import com.example.magicpinao.core.data.CoordinateRepository
 import com.example.magicpinao.core.data.MusicEntity
 import com.example.magicpinao.core.data.MusicRepository
 import com.example.magicpinao.core.data.PianoKeyCoordinate
+import android.widget.PopupMenu
+import com.example.magicpinao.core.calibration.PianoLayoutType
+import com.example.magicpinao.core.calibration.PianoLayouts
 import com.example.magicpinao.core.midi.MidiParser
+import com.example.magicpinao.core.midi.NoteSequence
 import com.example.magicpinao.core.auth.AuthManager
 import com.example.magicpinao.core.network.ApiRepository
 import com.example.magicpinao.core.network.CloudMusicCache
@@ -138,7 +143,12 @@ class FloatingPlayerService : Service(), PerformanceScheduler.PlaybackStateListe
 
     // 列表过滤模式
     private enum class FilterMode(val label: String) { ALL("全部"), LOCAL("本地"), CLOUD("云端") }
+    private enum class PlayMode { SINGLE, SEQUENCE }
     private var filterMode = FilterMode.ALL
+    private var playMode = PlayMode.SINGLE
+    private var selectedTrackIndex: Int? = null
+    private var currentSequence: NoteSequence? = null
+    private val speedOptions = (5..20).map { it / 10f }
 
     // 音乐列表
     private var fullMusicList: List<MusicEntity> = emptyList()
@@ -188,10 +198,10 @@ class FloatingPlayerService : Service(), PerformanceScheduler.PlaybackStateListe
     private var progressBar: android.widget.SeekBar? = null
     private var tvCurrentTime: TextView? = null
     private var tvTotalTime: TextView? = null
-    private var btnSpeed05: TextView? = null
-    private var btnSpeed1: TextView? = null
-    private var btnSpeed15: TextView? = null
-    private var btnSpeed2: TextView? = null
+    private var btnSpeedSelect: TextView? = null
+    private var btnPlayMode: TextView? = null
+    private var btnPressMode: TextView? = null
+    private var btnTrackSelect: TextView? = null
 
     // 进度更新定时器
     private var progressRunnable: Runnable? = null
@@ -308,10 +318,11 @@ class FloatingPlayerService : Service(), PerformanceScheduler.PlaybackStateListe
         stopProgressUpdater()
         tvPlayingIcon?.text = "🎵"
         updateTimeDisplay(0L, 0L)
-        // 自动播放下一首，没有则循环到第一首
-        handler.postDelayed({
-            autoPlayNext()
-        }, 800)
+        if (playMode != PlayMode.SEQUENCE) {
+            updateStatus("播放完成")
+            return
+        }
+        handler.postDelayed({ autoPlayNext() }, 800)
     }
 
     /** 自动播放下一首 */
@@ -322,6 +333,9 @@ class FloatingPlayerService : Service(), PerformanceScheduler.PlaybackStateListe
         val music = unifiedList[currentUnifiedIndex]
         currentMusicId = music.id
         currentMusicTitle = music.title
+        selectedTrackIndex = null
+        currentSequence = null
+        updateTrackButton()
         tvMusicTitle?.text = music.title
         updateStatus("自动播放: ${music.title}")
         Log.d(TAG, "Auto next: ${music.title} (${music.source})")
@@ -371,8 +385,8 @@ class FloatingPlayerService : Service(), PerformanceScheduler.PlaybackStateListe
             width = panelWidthPx
             height = WindowManager.LayoutParams.WRAP_CONTENT
             gravity = Gravity.TOP or Gravity.START
-            x = (dm.widthPixels - panelWidthPx - 24).coerceAtLeast(0)
-            y = dm.heightPixels / 5
+            x = (dm.widthPixels - panelWidthPx) / 2
+            y = dm.heightPixels / 4
         }
 
         floatingView = LayoutInflater.from(this).inflate(R.layout.floating_player_view, null)
@@ -391,10 +405,10 @@ class FloatingPlayerService : Service(), PerformanceScheduler.PlaybackStateListe
         progressBar = floatingView?.findViewById(R.id.progressBar)
         tvCurrentTime = floatingView?.findViewById(R.id.tvCurrentTime)
         tvTotalTime = floatingView?.findViewById(R.id.tvTotalTime)
-        btnSpeed05 = floatingView?.findViewById(R.id.btnSpeed05)
-        btnSpeed1 = floatingView?.findViewById(R.id.btnSpeed1)
-        btnSpeed15 = floatingView?.findViewById(R.id.btnSpeed15)
-        btnSpeed2 = floatingView?.findViewById(R.id.btnSpeed2)
+        btnSpeedSelect = floatingView?.findViewById(R.id.btnSpeedSelect)
+        btnPlayMode = floatingView?.findViewById(R.id.btnPlayMode)
+        btnPressMode = floatingView?.findViewById(R.id.btnPressMode)
+        btnTrackSelect = floatingView?.findViewById(R.id.btnTrackSelect)
 
         // 显示当前音符坐标方案（原神 / 光遇 …）
         refreshCoordinateLabel()
@@ -497,11 +511,16 @@ class FloatingPlayerService : Service(), PerformanceScheduler.PlaybackStateListe
             }
         })
 
-        // 速度按钮
-        btnSpeed05?.setOnClickListener { changeSpeed(0.5f) }
-        btnSpeed1?.setOnClickListener { changeSpeed(1.0f) }
-        btnSpeed15?.setOnClickListener { changeSpeed(1.5f) }
-        btnSpeed2?.setOnClickListener { changeSpeed(2.0f) }
+        btnSpeedSelect?.setOnClickListener { showSpeedPicker() }
+        btnPlayMode?.setOnClickListener { togglePlayMode() }
+        btnPressMode?.setOnClickListener { togglePressMode() }
+        btnTrackSelect?.setOnClickListener { showTrackPicker() }
+
+        updateSpeedLabel(1.0f)
+        updatePlayModeButton()
+        updatePressModeButton()
+        updateTrackButton()
+        scheduler.shortPressMode = false
 
         // 进度条拖拽 — 拖动时动态 seek
         progressBar?.max = 1000
@@ -552,11 +571,19 @@ class FloatingPlayerService : Service(), PerformanceScheduler.PlaybackStateListe
         tvMusicTitle?.text = currentMusicTitle.ifBlank { "选择音乐" }
         updatePlayPauseIcon()
         updateStatus("准备就绪")
-        updateSpeedButtons(1.0f)
+        updateSpeedLabel(1.0f)
         updateTimeDisplay(0L, 0L)
 
         try {
             windowManager?.addView(floatingView, layoutParams)
+            floatingView?.post {
+                val h = floatingView?.height ?: return@post
+                layoutParams?.apply {
+                    x = (dm.widthPixels - panelWidthPx) / 2
+                    y = (dm.heightPixels - h) / 2
+                }
+                floatingView?.let { windowManager?.updateViewLayout(it, layoutParams) }
+            }
             Log.d(TAG, "Floating player shown via APPLICATION_OVERLAY at (${layoutParams?.x}, ${layoutParams?.y})")
         } catch (e: Exception) {
             Log.e(TAG, "Failed to show floating player", e)
@@ -962,6 +989,9 @@ class FloatingPlayerService : Service(), PerformanceScheduler.PlaybackStateListe
         currentUnifiedIndex = unifiedList.indexOfFirst { it.id == music.id }
         currentMusicId = music.id
         currentMusicTitle = music.title
+        selectedTrackIndex = null
+        currentSequence = null
+        updateTrackButton()
         tvMusicTitle?.text = music.title
         Log.d(TAG, "Selected music: ${music.title} (${music.source})")
     }
@@ -972,6 +1002,9 @@ class FloatingPlayerService : Service(), PerformanceScheduler.PlaybackStateListe
         val music = unifiedList[currentUnifiedIndex]
         currentMusicId = music.id
         currentMusicTitle = music.title
+        selectedTrackIndex = null
+        currentSequence = null
+        updateTrackButton()
         tvMusicTitle?.text = music.title
         // 如果正在播放或暂停中，切换后自动播放新曲
         if (isPlaying || scheduler.isPaused) {
@@ -1073,7 +1106,8 @@ class FloatingPlayerService : Service(), PerformanceScheduler.PlaybackStateListe
                 val sequence = withContext(Dispatchers.IO) {
                     midiParser.parseMidiFile(filePath)
                 }
-                Log.d(TAG, "MIDI: ${sequence.noteCount} notes, ${sequence.duration}ms")
+                currentSequence = sequence
+                Log.d(TAG, "MIDI: ${sequence.noteCount} notes, ${sequence.duration}ms, tracks=${sequence.tracks.size}")
 
                 // 2. 加载坐标
                 val coordEntity = withContext(Dispatchers.IO) {
@@ -1089,13 +1123,7 @@ class FloatingPlayerService : Service(), PerformanceScheduler.PlaybackStateListe
                         updateStatus("无坐标配置")
                         tvCoordScheme?.text = "坐标: 未设置"
                         val appInfo = SupportedApps.findByPackage(pkg) ?: SupportedApps.getDefault()
-                        FloatingCalibrationService.start(
-                            this@FloatingPlayerService,
-                            appInfo.packageName,
-                            appInfo.keyCount,
-                            appInfo.layoutType,
-                            openTargetApp = false
-                        )
+                        showLayoutPickerDialog()
                     }
                     return@launch
                 }
@@ -1133,6 +1161,8 @@ class FloatingPlayerService : Service(), PerformanceScheduler.PlaybackStateListe
                 val layoutTypeName = coordEntity.layoutType.ifBlank { app.layoutType }
                 val lt = com.example.magicpinao.core.calibration.PianoLayoutType.fromName(layoutTypeName)
                 val keyCount = coordEntity.keyCount.takeIf { it > 0 } ?: app.keyCount
+                scheduler.trackFilter = selectedTrackIndex
+                scheduler.shortPressMode = btnPressMode?.text?.toString() == "短按"
                 scheduler.schedule(sequence, pkg, app.baseNote, keyCount, app.whiteKeysOnly, lt)
                 scheduler.start()
 
@@ -1274,29 +1304,155 @@ class FloatingPlayerService : Service(), PerformanceScheduler.PlaybackStateListe
         tvStatus?.text = status
     }
 
-    private fun updateSpeedButtons(activeSpeed: Float) {
-        val speeds = mapOf(btnSpeed05 to 0.5f, btnSpeed1 to 1.0f, btnSpeed15 to 1.5f, btnSpeed2 to 2.0f)
-        for ((btn, spd) in speeds) {
-            if (spd == activeSpeed) {
-                btn?.setBackgroundResource(R.drawable.btn_speed_active_bg)
-                btn?.setTextColor(0xFFFFFFFF.toInt())
-            } else {
-                btn?.setBackgroundResource(R.drawable.btn_speed_bg)
-                btn?.setTextColor(0x80FFFFFF.toInt())
+    private fun updateSpeedLabel(activeSpeed: Float) {
+        btnSpeedSelect?.text = String.format("%.1fx ▼", activeSpeed)
+    }
+
+    private fun changeSpeed(newSpeed: Float) {
+        updateSpeedLabel(newSpeed)
+        if (isPlaying || scheduler.isPaused) {
+            scheduler.changeSpeed(newSpeed)
+            updateStatus("速度: ${String.format("%.1f", newSpeed)}x")
+        } else {
+            scheduler.setSpeed(newSpeed)
+            updateStatus("速度: ${String.format("%.1f", newSpeed)}x")
+        }
+    }
+
+    private fun showSpeedPicker() {
+        val anchor = btnSpeedSelect ?: return
+        requestOverlayFocus(true)
+        val popup = PopupMenu(this, anchor)
+        speedOptions.forEach { spd ->
+            popup.menu.add(0, (spd * 10).toInt(), 0, String.format("%.1fx", spd))
+        }
+        popup.setOnMenuItemClickListener { item ->
+            val spd = item.itemId / 10f
+            changeSpeed(spd)
+            true
+        }
+        popup.setOnDismissListener { requestOverlayFocus(false) }
+        popup.show()
+    }
+
+    private fun togglePlayMode() {
+        playMode = if (playMode == PlayMode.SINGLE) PlayMode.SEQUENCE else PlayMode.SINGLE
+        updatePlayModeButton()
+        updateStatus(if (playMode == PlayMode.SEQUENCE) "顺序播放：播完自动下一首" else "单首播放：仅播放当前曲目")
+    }
+
+    private fun updatePlayModeButton() {
+        val btn = btnPlayMode ?: return
+        if (playMode == PlayMode.SEQUENCE) {
+            btn.text = "顺序"
+            btn.setBackgroundResource(R.drawable.btn_speed_active_bg)
+            btn.setTextColor(0xFFFFFFFF.toInt())
+        } else {
+            btn.text = "单首"
+            btn.setBackgroundResource(R.drawable.btn_speed_bg)
+            btn.setTextColor(0x80FFFFFF.toInt())
+        }
+    }
+
+    private fun togglePressMode() {
+        scheduler.shortPressMode = !scheduler.shortPressMode
+        updatePressModeButton()
+        updateStatus(if (scheduler.shortPressMode) "短按：音符按下时间缩短" else "长按：按 MIDI 正常时长")
+    }
+
+    private fun updatePressModeButton() {
+        val btn = btnPressMode ?: return
+        if (scheduler.shortPressMode) {
+            btn.text = "短按"
+            btn.setBackgroundResource(R.drawable.btn_speed_bg)
+            btn.setTextColor(0x80FFFFFF.toInt())
+        } else {
+            btn.text = "长按"
+            btn.setBackgroundResource(R.drawable.btn_speed_active_bg)
+            btn.setTextColor(0xFFFFFFFF.toInt())
+        }
+    }
+
+    private fun updateTrackButton() {
+        btnTrackSelect?.text = when (selectedTrackIndex) {
+            null -> "单音"
+            else -> "轨${selectedTrackIndex!! + 1}"
+        }
+    }
+
+    private fun showTrackPicker() {
+        if (currentUnifiedIndex < 0 || currentUnifiedIndex >= unifiedList.size) {
+            Toast.makeText(this, "请先选择一首 MIDI", Toast.LENGTH_SHORT).show()
+            return
+        }
+        val unified = unifiedList[currentUnifiedIndex]
+        scope.launch {
+            try {
+                var filePath = unified.filePath
+                if (unified.source == "cloud" && unified.cloudMusic != null) {
+                    val cloud = unified.cloudMusic
+                    val localFile = java.io.File("${filesDir.absolutePath}/midi_music/cloud_${cloud.id}_${cloud.name}")
+                    if (localFile.exists()) filePath = localFile.absolutePath
+                }
+                if (filePath.isNullOrBlank()) {
+                    Toast.makeText(this@FloatingPlayerService, "无法读取音乐文件", Toast.LENGTH_SHORT).show()
+                    return@launch
+                }
+                val seq = withContext(Dispatchers.IO) {
+                    currentSequence ?: midiParser.parseMidiFile(filePath)
+                }
+                currentSequence = seq
+                withContext(Dispatchers.Main) {
+                    requestOverlayFocus(true)
+                    val labels = buildList {
+                        add("全部音轨 (${seq.noteCount} 音)")
+                        seq.tracks.forEach { t ->
+                            add("音轨 ${t.index + 1}（${t.noteCount} 个音符）")
+                        }
+                    }.toTypedArray()
+                    AlertDialog.Builder(this@FloatingPlayerService)
+                        .setTitle("选择演奏音轨")
+                        .setItems(labels) { _, which ->
+                            selectedTrackIndex = if (which == 0) null else seq.tracks[which - 1].index
+                            scheduler.trackFilter = selectedTrackIndex
+                            updateTrackButton()
+                            val label = if (selectedTrackIndex == null) "全部音轨" else "音轨 ${selectedTrackIndex!! + 1}"
+                            updateStatus("已选 $label")
+                        }
+                        .setOnDismissListener { requestOverlayFocus(false) }
+                        .show()
+                }
+            } catch (e: Exception) {
+                withContext(Dispatchers.Main) {
+                    Toast.makeText(this@FloatingPlayerService, "读取音轨失败: ${e.message}", Toast.LENGTH_SHORT).show()
+                }
             }
         }
     }
 
-    private fun changeSpeed(newSpeed: Float) {
-        updateSpeedButtons(newSpeed)
-        if (isPlaying || scheduler.isPaused) {
-            // 动态调整：不停止，从当前位置以新速度继续
-            scheduler.changeSpeed(newSpeed)
-            updateStatus("速度: ${newSpeed}x (动态调整)")
-        } else {
-            scheduler.setSpeed(newSpeed)
-            updateStatus("速度: ${newSpeed}x")
-        }
+    private fun showLayoutPickerDialog() {
+        requestOverlayFocus(true)
+        val items = PianoLayoutType.entries.map { it.label }.toTypedArray()
+        AlertDialog.Builder(this)
+            .setTitle("选择键位方案")
+            .setItems(items) { _, which ->
+                val type = PianoLayoutType.entries[which]
+                val layout = PianoLayouts.getLayout(type)
+                FloatingCalibrationService.start(
+                    this,
+                    SupportedApps.layoutId(type),
+                    layout.keyCount,
+                    type.name,
+                    openTargetApp = false
+                )
+                Toast.makeText(
+                    this,
+                    "已选择 ${type.label}，请在游戏界面点击「开始标定」",
+                    Toast.LENGTH_LONG
+                ).show()
+            }
+            .setOnDismissListener { requestOverlayFocus(false) }
+            .show()
     }
 
     private fun updateTimeDisplay(currentMs: Long, totalMs: Long) {
@@ -1454,38 +1610,15 @@ class FloatingPlayerService : Service(), PerformanceScheduler.PlaybackStateListe
 
         val btn = TextView(this).apply {
             tag = "btnCalibrate"
-            text = "选择键位方案"
-            textSize = 8f
+            text = "键位"
+            textSize = 9f
             gravity = Gravity.CENTER
             setTextColor(0xFF00CEC9.toInt())
             setBackgroundResource(R.drawable.btn_speed_bg)
-            maxLines = 2
-            layoutParams = LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.MATCH_PARENT, 1.6f).apply {
+            layoutParams = LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.MATCH_PARENT, 1f).apply {
                 marginStart = dpToPx(4)
             }
-            setOnClickListener {
-                val pkg = SupportedApps.normalizePackage(
-                    currentPackageName.ifBlank { targetPackage ?: "" }
-                )
-                if (pkg.isBlank()) {
-                    Toast.makeText(this@FloatingPlayerService, "未设置目标应用", Toast.LENGTH_SHORT).show()
-                    return@setOnClickListener
-                }
-                stopPlayback()
-                val app = SupportedApps.findByPackage(pkg) ?: SupportedApps.getDefault()
-                FloatingCalibrationService.start(
-                    this@FloatingPlayerService,
-                    app.packageName,
-                    app.keyCount,
-                    app.layoutType,
-                    openTargetApp = false
-                )
-                Toast.makeText(
-                    this@FloatingPlayerService,
-                    "请打开游戏钢琴界面后对齐「${app.appName}」坐标",
-                    Toast.LENGTH_SHORT
-                ).show()
-            }
+            setOnClickListener { showLayoutPickerDialog() }
         }
         // 插在列表按钮后面
         val idx = parent.indexOfChild(listBtn)
